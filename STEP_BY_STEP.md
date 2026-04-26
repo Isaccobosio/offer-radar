@@ -12,8 +12,10 @@ Follow these steps in order to get all the information you need.
 - Go to: https://my.telegram.org
 - You should see a page asking you to log in
 
-**1.2. Log in with your MAIN Telegram account**
-- Your regular phone number (the one you use Telegram daily with)
+**1.2. Log in with ANY Telegram account**
+- You can use your main account OR your burner account
+- These are **application-level** credentials (not account-specific)
+- Either one works the same
 - You'll get a code sent to Telegram
 - Enter the code
 
@@ -92,7 +94,10 @@ BOT_TOKEN = _______________
 
 ### Where: Telegram app → @userinfobot
 
-**3.1. Open Telegram**
+**3.1. Open Telegram on your MAIN account**
+- This is the account you use daily
+- This is where you'll RECEIVE the bot summaries
+- NOT the burner account
 
 **3.2. Search for @userinfobot**
 - Search for "userinfobot"

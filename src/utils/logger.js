@@ -1,5 +1,7 @@
 const winston = require('winston');
-const config = require('../config/constants');
+// constants.js lives at the repository root under /config
+// this file is in src/utils, so go up two levels to reach it
+const config = require('../../config/constants');
 
 const logger = winston.createLogger({
   level: config.LOG_LEVEL,

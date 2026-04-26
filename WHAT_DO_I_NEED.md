@@ -59,6 +59,7 @@ TOTAL COST: $0 (everything is free)
 **What is it?**
 - These are authentication tokens for YOUR app to talk to Telegram servers
 - Think of it like a username/password pair for your application
+- These are **application-level**, not account-specific
 
 **Why do I need it?**
 - So OfferRadar can connect to Telegram and receive messages
@@ -66,9 +67,15 @@ TOTAL COST: $0 (everything is free)
 
 **Where to get it?**
 - Go to https://my.telegram.org
-- Log in with YOUR MAIN account
+- Log in with **ANY Telegram account** (main or burner, doesn't matter)
 - Click "API development tools"
 - You'll see API_ID (a number) and API_HASH (a long string)
+- These credentials work the same regardless of which account you use
+
+**Which account should I use?**
+- 📌 **EITHER works** - these are app-level credentials
+- Use whichever account is easier for you
+- You could even use your secondary/burner account if you prefer
 
 **Is it safe?**
 - ✅ Yes, these are like a username/password - keep them secret
@@ -114,8 +121,14 @@ TOTAL COST: $0 (everything is free)
 - It's like your mailing address for the bot
 - Without it, the bot wouldn't know who to message
 
+**Which account?**
+- 📌 **YOUR MAIN ACCOUNT** (the one you use daily)
+- This is where you'll RECEIVE the daily offer summaries
+- NOT the burner account
+- The bot sends messages to this account ID
+
 **Where to get it?**
-- Open Telegram
+- Open Telegram on your MAIN account
 - Search for @userinfobot
 - Send `/start`
 - It shows your ID in the first line

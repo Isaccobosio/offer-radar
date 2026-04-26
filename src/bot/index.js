@@ -35,38 +35,53 @@ class BotInterface {
    */
   setupHandlers() {
     // /start command
-    this.bot.onText(/\/start/, (msg) => {
+    this.bot.onText(/^\/start(@\w+)?(\s|$)/i, (msg) => {
       this.handleStart(msg);
     });
 
     // /add_interest command
-    this.bot.onText(/\/add_interest(.*)/, (msg, match) => {
-      this.handleAddInterest(msg, match);
+    this.bot.onText(/^\/add_interest(@\w+)?\s(.*)$/i, (msg, match) => {
+      this.handleAddInterest(msg, { 1: match[2] });
     });
 
     // /my_interests command
-    this.bot.onText(/\/my_interests/, (msg) => {
+    this.bot.onText(/^\/my_interests(@\w+)?(\s|$)/i, (msg) => {
       this.handleMyInterests(msg);
     });
 
     // /remove_interest command
-    this.bot.onText(/\/remove_interest(.*)/, (msg, match) => {
-      this.handleRemoveInterest(msg, match);
+    this.bot.onText(/^\/remove_interest(@\w+)?\s(.*)$/i, (msg, match) => {
+      this.handleRemoveInterest(msg, { 1: match[2] });
     });
 
     // /search command
-    this.bot.onText(/\/search(.*)/, (msg, match) => {
-      this.handleSearch(msg, match);
+    this.bot.onText(/^\/search(@\w+)?\s(.*)$/i, (msg, match) => {
+      this.handleSearch(msg, { 1: match[2] });
     });
 
     // /stats command
-    this.bot.onText(/\/stats/, (msg) => {
+    this.bot.onText(/^\/stats(@\w+)?(\s|$)/i, (msg) => {
       this.handleStats(msg);
     });
 
+    // /add_channel command
+    this.bot.onText(/^\/add_channel(@\w+)?\s(.*)$/i, (msg, match) => {
+      this.handleAddChannel(msg, { 1: match[2] });
+    });
+
+    // /channels command
+    this.bot.onText(/^\/channels(@\w+)?(\s|$)/i, (msg) => {
+      this.handleChannels(msg);
+    });
+
     // /help command
-    this.bot.onText(/\/help/, (msg) => {
+    this.bot.onText(/^\/help(@\w+)?(\s|$)/i, (msg) => {
       this.handleHelp(msg);
+    });
+
+    // Handle callback queries from inline buttons
+    this.bot.on('callback_query', (query) => {
+      this.handleCallbackQuery(query);
     });
 
     // Handle forwarded messages from channels
@@ -92,23 +107,43 @@ class BotInterface {
    */
   async handleForwardedMessage(msg) {
     try {
-      const channelName = msg.forward_from_chat?.title || 'Channel';
+      const channelName = msg.forward_from_chat?.title || 'Forwarded';
       const text = msg.text;
 
-      if (!text || text.length < 20) {
-        // Message too short, skip
+      if (!text || text.length < config.MIN_MESSAGE_LENGTH) {
+        logger.debug('Message too short, skipping');
         return;
       }
 
       logger.info(`📨 Processing forwarded message from ${channelName}`);
 
-      // This will be handled by the UserBot in index.js
-      // which will pass it to the LLM processor
-      this.lastForwardedMessage = {
-        text,
-        channel: channelName,
-        timestamp: new Date(),
+      // Store the forwarded offer in the database
+      const offer = {
+        message_id: msg.message_id,
+        channel_id: msg.forward_from_chat?.id || 0,
+        channel_name: channelName,
+        raw_text: text,
+        created_at: new Date(),
       };
+
+      // Check if already processed
+      const isProcessed = await this.db.isProcessed(offer.message_id);
+      if (isProcessed) {
+        logger.debug(`Message ${offer.message_id} already processed`);
+        return;
+      }
+
+      // Store the offer
+      await this.db.insertOffer(offer);
+      await this.db.markProcessed(offer.message_id, offer.channel_id);
+
+      logger.info(`✅ Offer stored: "${text.substring(0, 60)}..."`);
+
+      // Send confirmation to user
+      await this.bot.sendMessage(
+        this.mainAccountId,
+        `✅ Received offer from *${channelName}*\n\nWill analyze in next batch 📊`
+      );
     } catch (err) {
       logger.error('Error handling forwarded message:', err.message);
     }
@@ -151,20 +186,46 @@ class BotInterface {
       return;
     }
 
-    const text = `
-👋 Welcome to **OfferRadar**!
+    const text = `👋 Welcome to *OfferRadar*!
 
 I'm monitoring your Telegram channels for valuable offers.
 
-📝 *Quick Start:*
-• /add_interest [keyword] [category] - Add what to track
-• /my_interests - View tracked items
-• /search [keyword] - Find past offers
-• /stats - View summary statistics
-• /help - See all commands
-    `;
+📖 *How it works:*
+1️⃣ Add channels you want to monitor
+2️⃣ Add keywords/interests you care about
+3️⃣ I'll analyze offers and send summaries
 
-    await this.reply(msg, text);
+🚀 *Quick Start:*
+Tap the buttons below or use commands:`;
+
+    const keyboard = {
+      inline_keyboard: [
+        [
+          { text: '➕ Add Channel', callback_data: 'add_channel' },
+          { text: '➕ Add Interest', callback_data: 'add_interest' }
+        ],
+        [
+          { text: '📋 My Interests', callback_data: 'my_interests' },
+          { text: '📡 My Channels', callback_data: 'channels' }
+        ],
+        [
+          { text: '🔍 Search', callback_data: 'search' },
+          { text: '📊 Stats', callback_data: 'stats' }
+        ],
+        [
+          { text: '📖 Help', callback_data: 'help' }
+        ]
+      ]
+    };
+
+    try {
+      await this.bot.sendMessage(msg.chat.id, text, {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard
+      });
+    } catch (err) {
+      logger.error('Failed to send start message:', err.message);
+    }
   }
 
   async handleAddInterest(msg, match) {
@@ -212,7 +273,21 @@ I'm monitoring your Telegram channels for valuable offers.
       const interests = await this.db.getAllInterests();
 
       if (interests.length === 0) {
-        await this.reply(msg, `📋 You have no tracked interests yet.\n\nUse /add_interest to add one!`);
+        const keyboard = {
+          inline_keyboard: [
+            [{ text: '➕ Add Interest', callback_data: 'add_interest' }]
+          ]
+        };
+
+        await this.bot.sendMessage(
+          msg.chat.id,
+          '📋 You have no tracked interests yet.\n\nTap the button below to add one:',
+          {
+            parse_mode: 'Markdown',
+            reply_markup: keyboard,
+            reply_to_message_id: msg.message_id
+          }
+        );
         return;
       }
 
@@ -225,16 +300,18 @@ I'm monitoring your Telegram channels for valuable offers.
         grouped[interest.category].push(interest.keyword);
       }
 
-      let text = `📋 *Your Tracked Interests* (${interests.length} total)\n\n`;
+      let text = `📋 Your Tracked Interests (${interests.length} total)\n\n`;
       for (const [category, keywords] of Object.entries(grouped)) {
-        text += `*${category}*\n`;
+        text += `${category}\n`;
         keywords.forEach(kw => {
           text += `  • ${kw}\n`;
         });
         text += '\n';
       }
 
-      await this.reply(msg, text);
+      await this.bot.sendMessage(msg.chat.id, text, {
+        reply_to_message_id: msg.message_id
+      });
     } catch (err) {
       await this.reply(msg, `❌ Error: ${err.message}`);
     }
@@ -311,20 +388,22 @@ I'm monitoring your Telegram channels for valuable offers.
     try {
       const stats = await this.db.getStats();
 
-      let text = `📊 *Statistics*\n\n`;
-      text += `Total offers analyzed: *${stats.total_offers.count}*\n`;
-      text += `Approved offers: *${stats.processed_offers.count}*\n`;
-      text += `Pending offers: *${stats.pending_offers.count}*\n`;
-      text += `Tracked interests: *${stats.interests_count.count}*\n\n`;
+      let text = `📊 Statistics\n\n`;
+      text += `Total offers analyzed: ${stats.total_offers.count}\n`;
+      text += `Approved offers: ${stats.processed_offers.count}\n`;
+      text += `Pending offers: ${stats.pending_offers.count}\n`;
+      text += `Tracked interests: ${stats.interests_count.count}\n\n`;
 
       if (stats.categories.length > 0) {
-        text += `*Categories tracking:*\n`;
+        text += `Categories tracking:\n`;
         stats.categories.forEach(cat => {
           text += `  • ${cat.category}\n`;
         });
       }
 
-      await this.reply(msg, text);
+      await this.bot.sendMessage(msg.chat.id, text, {
+        reply_to_message_id: msg.message_id
+      });
     } catch (err) {
       await this.reply(msg, `❌ Error: ${err.message}`);
     }
@@ -336,13 +415,12 @@ I'm monitoring your Telegram channels for valuable offers.
       return;
     }
 
-    const text = `
-📖 *Available Commands*
+    const text = `📖 Available Commands
 
-*Interest Management:*
+Interest Management:
 /add_interest [keyword] [category]
   Add a new keyword to track
-  Example: /add_interest "airpods pro" electronics
+  Example: /add_interest airpods electronics
 
 /my_interests
   List all tracked keywords
@@ -350,30 +428,193 @@ I'm monitoring your Telegram channels for valuable offers.
 /remove_interest [keyword]
   Stop tracking a keyword
 
-*Searching:*
+Channel Management:
+/add_channel [channel_name]
+  Register a channel to monitor
+  Example: /add_channel offers_electronics
+
+/channels
+  List all monitored channels
+
+Searching:
 /search [keyword]
   Search past offers by keyword
 
-*Information:*
+Information:
 /stats
   View statistics and summary
   
 /help
   Show this help message
 
-*How it works:*
-1️⃣ I listen to your channels 24/7
-2️⃣ Every day at 10 AM, I analyze offers
-3️⃣ Only valuable offers are sent to you
-4️⃣ You can search and manage interests anytime
+How it works:
+1️⃣ Add channels from your burner account
+2️⃣ Forward messages from channels to this bot
+3️⃣ Every day at 10 AM, I analyze offers
+4️⃣ Only valuable offers are sent to you
 
-💡 *Tips:*
+💡 Tips:
 • Add multiple keywords in one category
 • Be specific with keywords for better matches
-• Check /stats regularly to see what's working
-    `;
+• Check /stats regularly to see progress`;
 
-    await this.reply(msg, text);
+    await this.bot.sendMessage(msg.chat.id, text, {
+      reply_to_message_id: msg.message_id
+    });
+  }
+
+  async handleAddChannel(msg, match) {
+    if (!this.isFromMainAccount(msg)) {
+      await this.reply(msg, '❌ Unauthorized');
+      return;
+    }
+
+    const channelName = (match[1] || '').trim();
+
+    if (!channelName) {
+      await this.reply(
+        msg,
+        `❌ Usage: /add_channel [channel_name]\n\nExample:\n/add_channel offers_electronics`
+      );
+      return;
+    }
+
+    try {
+      // Generate a channel ID (using hash of channel name for uniqueness)
+      const crypto = require('crypto');
+      const channelId = parseInt(crypto.createHash('md5').update(channelName).digest('hex').substring(0, 8), 16);
+
+      await this.db.run(
+        'INSERT OR IGNORE INTO channels (channel_id, channel_name) VALUES (?, ?)',
+        [channelId, channelName]
+      );
+
+      await this.reply(
+        msg,
+        `✅ Channel Added: *${channelName}*\n\nNow:\n1. Go to your burner account\n2. Join the channel if not already\n3. Forward messages from this channel to this bot\n\nI'll analyze them automatically! 🎯`
+      );
+      logger.info(`Added channel: ${channelName}`);
+    } catch (err) {
+      if (err.message.includes('UNIQUE')) {
+        await this.reply(msg, `⚠️ Channel "${channelName}" already registered.`);
+      } else {
+        await this.reply(msg, `❌ Error: ${err.message}`);
+      }
+    }
+  }
+
+  async handleChannels(msg) {
+    if (!this.isFromMainAccount(msg)) {
+      await this.reply(msg, '❌ Unauthorized');
+      return;
+    }
+
+    try {
+      const channels = await this.db.all('SELECT channel_name FROM channels');
+
+      if (channels.length === 0) {
+        const keyboard = {
+          inline_keyboard: [
+            [{ text: '➕ Add Channel', callback_data: 'add_channel' }]
+          ]
+        };
+
+        await this.bot.sendMessage(
+          msg.chat.id,
+          '📡 You have no monitored channels yet.\n\nTap the button below to add one:',
+          {
+            reply_markup: keyboard,
+            reply_to_message_id: msg.message_id
+          }
+        );
+        return;
+      }
+
+      let text = `📡 Monitored Channels (${channels.length} total)\n\n`;
+      channels.forEach((ch, idx) => {
+        text += `${idx + 1}. ${ch.channel_name}\n`;
+      });
+      text += `\n💡 Forward messages from these channels to get them analyzed`;
+
+      await this.bot.sendMessage(msg.chat.id, text, {
+        reply_to_message_id: msg.message_id
+      });
+    } catch (err) {
+      await this.reply(msg, `❌ Error: ${err.message}`);
+    }
+  }
+
+  async handleCallbackQuery(query) {
+    const msg = query.message;
+    const action = query.data;
+
+    // Verify it's from the main account
+    if (query.from.id !== this.mainAccountId) {
+      await this.bot.answerCallbackQuery(query.id, { text: '❌ Unauthorized', show_alert: true });
+      return;
+    }
+
+    try {
+      // Create a temporary msg object for other handlers
+      const tmpMsg = {
+        chat: msg.chat,
+        from: query.from,
+        message_id: msg.message_id,
+        text: '/' + action
+      };
+
+      switch (action) {
+        case 'add_interest':
+          await this.bot.answerCallbackQuery(query.id);
+          await this.bot.sendMessage(
+            msg.chat.id,
+            '📝 Send me: /add_interest [keyword] [category]\n\nExample:\n/add_interest airpods electronics'
+          );
+          break;
+
+        case 'add_channel':
+          await this.bot.answerCallbackQuery(query.id);
+          await this.bot.sendMessage(
+            msg.chat.id,
+            '📝 Send me: /add_channel [channel_name]\n\nExample:\n/add_channel offers_electronics'
+          );
+          break;
+
+        case 'my_interests':
+          await this.bot.answerCallbackQuery(query.id);
+          await this.handleMyInterests(tmpMsg);
+          break;
+
+        case 'channels':
+          await this.bot.answerCallbackQuery(query.id);
+          await this.handleChannels(tmpMsg);
+          break;
+
+        case 'search':
+          await this.bot.answerCallbackQuery(query.id);
+          await this.bot.sendMessage(
+            msg.chat.id,
+            '🔍 Send me: /search [keyword]\n\nExample:\n/search airpods'
+          );
+          break;
+
+        case 'stats':
+          await this.bot.answerCallbackQuery(query.id);
+          await this.handleStats(tmpMsg);
+          break;
+
+        case 'help':
+          await this.bot.answerCallbackQuery(query.id);
+          await this.handleHelp(tmpMsg);
+          break;
+
+        default:
+          await this.bot.answerCallbackQuery(query.id, { text: 'Unknown action', show_alert: true });
+      }
+    } catch (err) {
+      logger.error('Error handling callback query:', err.message);
+      await this.bot.answerCallbackQuery(query.id, { text: 'Error occurred', show_alert: true });
+    }
   }
 
   /**

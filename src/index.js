@@ -40,10 +40,22 @@ class OfferRadar {
       this.userbot = new UserBotClient(this.db);
       await this.userbot.connect();
 
-      // Initialize LLM
-      logger.info('🧠 Initializing Groq analyzer...');
-      this.llm = new GroqAnalyzer();
-      await this.llm.test();
+      // Initialize LLM (only if API key provided)
+      if (process.env.GROQ_API_KEY) {
+        logger.info('🧠 Initializing Groq analyzer...');
+        this.llm = new GroqAnalyzer();
+        try {
+          await this.llm.test();
+        } catch (err) {
+          // If Groq is inaccessible or the key is invalid, don't abort the whole app.
+          logger.warn('GROQ initialization failed — continuing with LLM disabled');
+          logger.debug(err.message || err);
+          this.llm = null;
+        }
+      } else {
+        logger.warn('GROQ_API_KEY not set — LLM features disabled');
+        this.llm = null;
+      }
 
       // Initialize Bot Interface
       logger.info('🤝 Initializing bot interface...');
