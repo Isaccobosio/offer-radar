@@ -35,117 +35,16 @@ class BotInterface {
    * Setup command and message handlers
    */
   setupHandlers() {
-    // /start command
-    this.bot.onText(/^\/start(@\w+)?(\s|$)/i, (msg) => {
-      this.handleStart(msg);
-    });
-
-    // /add_interest command
-    this.bot.onText(/^\/add_interest(@\w+)?\s(.*)$/i, (msg, match) => {
-      this.handleAddInterest(msg, { 1: match[2] });
-    });
-
-    // /my_interests command
-    this.bot.onText(/^\/my_interests(@\w+)?(\s|$)/i, (msg) => {
-      this.handleMyInterests(msg);
-    });
-
-    // /remove_interest command
-    this.bot.onText(/^\/remove_interest(@\w+)?\s(.*)$/i, (msg, match) => {
-      this.handleRemoveInterest(msg, { 1: match[2] });
-    });
-
-    // /search command
-    this.bot.onText(/^\/search(@\w+)?\s(.*)$/i, (msg, match) => {
-      this.handleSearch(msg, { 1: match[2] });
-    });
-
-    // /stats command
-    this.bot.onText(/^\/stats(@\w+)?(\s|$)/i, (msg) => {
-      this.handleStats(msg);
-    });
-
-    // /add_channel command
-    this.bot.onText(/^\/add_channel(@\w+)?\s(.*)$/i, (msg, match) => {
-      this.handleAddChannel(msg, { 1: match[2] });
-    });
-
-    // /channels command
-    this.bot.onText(/^\/channels(@\w+)?(\s|$)/i, (msg) => {
-      this.handleChannels(msg);
-    });
-
-    // /help command
-    this.bot.onText(/^\/help(@\w+)?(\s|$)/i, (msg) => {
-      this.handleHelp(msg);
-    });
-
-    // Handle callback queries from inline buttons
-    this.bot.on('callback_query', (query) => {
-      this.handleCallbackQuery(query);
-    });
-
-    // Handle forwarded messages from channels
-    this.bot.on('message', (msg) => {
-      // Only process forwarded messages
-      if (msg.forward_from_chat && msg.text) {
-        this.handleForwardedMessage(msg);
-      }
-    });
-
-    logger.info('Bot handlers registered');
+    const handlers = require('./handlers');
+    handlers.attachHandlers(this);
   }
 
   /**
    * Register bot commands with Telegram for autocomplete
    */
   async registerCommands() {
-    try {
-      const commands = [
-        {
-          command: 'start',
-          description: 'Show main menu'
-        },
-        {
-          command: 'add_channel',
-          description: 'Forward a message to auto-register channel'
-        },
-        {
-          command: 'channels',
-          description: 'View monitored channels'
-        },
-        {
-          command: 'add_interest',
-          description: 'Add keyword to track (format: /add_interest keyword)'
-        },
-        {
-          command: 'my_interests',
-          description: 'View tracked keywords'
-        },
-        {
-          command: 'remove_interest',
-          description: 'Stop tracking keyword (format: /remove_interest keyword)'
-        },
-        {
-          command: 'search',
-          description: 'Search past offers (format: /search keyword)'
-        },
-        {
-          command: 'stats',
-          description: 'View statistics'
-        },
-        {
-          command: 'help',
-          description: 'Show all commands'
-        }
-      ];
-
-      await this.bot.setMyCommands(commands);
-      logger.info('✅ Bot commands registered with Telegram');
-    } catch (err) {
-      logger.warn('Failed to register bot commands:', err.message);
-      // Continue anyway - not critical
-    }
+    const handlers = require('./handlers');
+    await handlers.registerCommands(this);
   }
 
   /**
@@ -156,22 +55,29 @@ class BotInterface {
   }
 
   /**
+   * Attach a BatchProcessor instance for manual triggers
+   */
+  setProcessor(processor) {
+    this.processor = processor;
+  }
+
+  /**
+   * Attach a Backfiller instance to allow on-demand backfills
+   */
+  setBackfiller(backfiller) {
+    this.backfiller = backfiller;
+  }
+
+  /**
    * Handle forwarded messages from channels
    */
   async handleForwardedMessage(msg) {
     try {
       const channelName = msg.forward_from_chat?.title || 'Forwarded';
       const channelId = msg.forward_from_chat?.id || 0;
-      const text = msg.text;
+      const text = msg.text || msg.caption || '';
 
-      if (!text || text.length < config.MIN_MESSAGE_LENGTH) {
-        logger.debug('Message too short, skipping');
-        return;
-      }
-
-      logger.info(`📨 Processing forwarded message from ${channelName}`);
-
-      // Auto-register channel if not already registered
+      // Auto-register channel if available (register even if message is short)
       if (channelId !== 0) {
         try {
           await this.db.run(
@@ -183,6 +89,13 @@ class BotInterface {
           logger.debug(`Channel ${channelName} already registered`);
         }
       }
+
+      if (!text || text.length < config.MIN_MESSAGE_LENGTH) {
+        logger.debug(`Message too short, skipping; channel ${channelName} registered`);
+        return;
+      }
+
+      logger.info(`📨 Processing forwarded message from ${channelName}`);
 
       // Store the forwarded offer in the database
       const offer = {
@@ -572,6 +485,17 @@ How it works:
         `✅ Channel Added: *${channelName}*\n\nNow:\n1. Go to your burner account\n2. Join the channel if not already\n3. Forward messages from this channel to this bot\n\nI'll analyze them automatically! 🎯`
       );
       logger.info(`Added channel: ${channelName}`);
+
+      // Trigger backfill for newly added channel (if available)
+      if (this.backfiller) {
+        try {
+          await this.bot.sendMessage(msg.chat.id, '🔁 Attempting to backfill recent offers for this channel...', { reply_to_message_id: msg.message_id });
+          await this.backfiller.backfillChannel({ channel_id: channelId, channel_name: channelName }, config.OFFER_RETENTION_DAYS, this.db);
+          await this.bot.sendMessage(msg.chat.id, '✅ Backfill completed', { reply_to_message_id: msg.message_id });
+        } catch (err) {
+          logger.warn('Backfill for new channel failed:', err.message || err);
+        }
+      }
     } catch (err) {
       if (err.message.includes('UNIQUE')) {
         await this.reply(msg, `⚠️ Channel "${channelName}" already registered.`);

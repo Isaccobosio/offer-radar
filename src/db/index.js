@@ -173,12 +173,24 @@ class Database {
       INSERT INTO offers (message_id, channel_id, channel_name, raw_text, status)
       VALUES (?, ?, ?, ?, 'pending')
     `;
-    return this.run(sql, [
+    const result = await this.run(sql, [
       offer.message_id,
       offer.channel_id,
       offer.channel_name,
       offer.raw_text,
     ]);
+
+    try {
+      const raw = offer.raw_text || '';
+      const firstLine = (raw.split('\n').find(l => l && l.trim()) || raw).trim();
+      const shortTitle = firstLine.replace(/\s+/g, ' ').slice(0, 80);
+      const channel = offer.channel_name || offer.channel_id || 'unknown-channel';
+      logger.info(`🆕 New offer: ${channel} — ${shortTitle}`);
+    } catch (err) {
+      logger.debug('Failed to log new offer summary', err);
+    }
+
+    return result;
   }
 
   /**

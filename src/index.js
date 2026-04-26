@@ -8,6 +8,7 @@ const UserBotClient = require('./userbot/client');
 const GroqAnalyzer = require('./llm');
 const BatchProcessor = require('./scheduler');
 const BotInterface = require('./bot');
+const Backfiller = require('./userbot/history');
 
 class OfferRadar {
   constructor() {
@@ -68,13 +69,43 @@ class OfferRadar {
       this.processor = new BatchProcessor(this.llm, this.db, {
         sendMessage: (msg) => this.bot.sendMessage(msg),
       });
+      // Expose processor to bot for manual trigger
+      if (this.bot && typeof this.bot.setProcessor === 'function') {
+        this.bot.setProcessor(this.processor);
+      }
       this.processor.startJobs();
+
+      // Initialize optional backfiller (MTProto) if session is available
+      try {
+        this.backfiller = new Backfiller();
+        if (process.env.TELEGRAM_SESSION) {
+          await this.backfiller.init();
+          if (this.bot && typeof this.bot.setBackfiller === 'function') {
+            this.bot.setBackfiller(this.backfiller);
+          }
+        }
+      } catch (err) {
+        logger.warn('Backfiller initialization failed:', err.message || err);
+        this.backfiller = null;
+      }
 
       logger.info('\n✅ OfferRadar initialized successfully!');
       logger.info('═'.repeat(50));
 
       // Load channels from database (if any)
       await this.loadChannels();
+
+      // Run initial backfill for all channels (last N days) if backfiller available
+      if (this.backfiller) {
+        try {
+          const channels = await this.db.all('SELECT channel_id, channel_name FROM channels');
+          if (channels.length > 0) {
+            await this.backfiller.backfillChannels(channels, config.OFFER_RETENTION_DAYS, this.db);
+          }
+        } catch (err) {
+          logger.warn('Initial backfill failed:', err.message || err);
+        }
+      }
 
       // Start listening
       await this.startListening();

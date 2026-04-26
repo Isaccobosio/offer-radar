@@ -7,7 +7,8 @@
     "start": "node src/index.js",
     "setup:session": "node src/setup.js",
     "dev": "nodemon src/index.js",
-    "test": "jest"
+    "test": "jest",
+    "create:session": "node src/userbot/create_session.js"
   },
   "keywords": [
     "telegram",
@@ -26,6 +27,7 @@
     "node-cron": "^3.0.2",
     "node-telegram-bot-api": "^0.63.0",
     "sqlite3": "^5.1.6",
+    "telegram": "^2.26.22",
     "winston": "^3.8.2"
   },
   "devDependencies": {
