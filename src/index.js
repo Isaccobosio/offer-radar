@@ -99,7 +99,7 @@ class OfferRadar {
       // Run initial backfill for all channels (last N days) if backfiller available
       if (this.backfiller) {
         try {
-          const channels = await this.db.all('SELECT channel_id, channel_name FROM channels');
+          const channels = await this.db.all('SELECT channel_id, channel_name, channel_username FROM channels');
           if (channels.length > 0) {
             await this.backfiller.backfillChannels(channels, config.OFFER_RETENTION_DAYS, this.db);
           }
@@ -116,7 +116,7 @@ class OfferRadar {
         try {
           cron.schedule(config.BACKFILL_SCHEDULE, async () => {
             try {
-              const channels = await this.db.all('SELECT channel_id, channel_name FROM channels');
+              const channels = await this.db.all('SELECT channel_id, channel_name, channel_username FROM channels');
               if (channels && channels.length > 0) {
                 logger.info('🔁 Periodic backfill started');
                 await this.backfiller.backfillChannels(channels, config.OFFER_RETENTION_DAYS, this.db);
@@ -207,8 +207,8 @@ class OfferRadar {
   async addChannel(channelId, channelName) {
     try {
       await this.db.run(
-        'INSERT OR IGNORE INTO channels (channel_id, channel_name) VALUES (?, ?)',
-        [channelId, channelName]
+        'INSERT OR IGNORE INTO channels (channel_id, channel_name, channel_username) VALUES (?, ?, ?)',
+        [channelId, channelName, null]
       );
 
       if (!this.channelIds.includes(channelId)) {

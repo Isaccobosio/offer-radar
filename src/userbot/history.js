@@ -89,16 +89,16 @@ class Backfiller {
       }
 
       // If numeric resolution failed or wasn't attempted, try by channel name (username) when possible
-      if (!entity && channel.channel_name) {
-        let username = channel.channel_name;
-        // Only try to form a username if channel_name looks like a handle (no spaces)
+      if (!entity && (channel.channel_username || channel.channel_name)) {
+        let username = channel.channel_username || channel.channel_name;
+        // Normalize username if it's a plain handle (no spaces) and missing '@'
         if (!username.startsWith('@') && !username.includes(' ')) {
           username = '@' + username;
         }
         try {
           entity = await this.client.getEntity(username);
         } catch (errName) {
-          logger.warn(`Could not resolve channel by name ${channel.channel_name}: ${errName.message || errName}`);
+          logger.warn(`Could not resolve channel by name ${channel.channel_username || channel.channel_name}: ${errName.message || errName}`);
           entity = null;
         }
       }

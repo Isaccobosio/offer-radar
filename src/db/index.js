@@ -129,6 +129,7 @@ class Database {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         channel_id INTEGER NOT NULL UNIQUE,
         channel_name TEXT NOT NULL,
+        channel_username TEXT,
         subscribed_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )`,
     ];
@@ -163,6 +164,18 @@ class Database {
     }
 
     logger.info('✅ Database tables and indexes created');
+
+    // Ensure channels table has channel_username column (migration for older DBs)
+    try {
+      const cols = await this.all("PRAGMA table_info(channels)");
+      const hasUsername = cols.some(c => c.name === 'channel_username');
+      if (!hasUsername) {
+        await this.run("ALTER TABLE channels ADD COLUMN channel_username TEXT");
+        logger.info('Added channel_username column to channels table (migration)');
+      }
+    } catch (err) {
+      logger.debug('Channels migration check failed:', err.message || err);
+    }
   }
 
   /**

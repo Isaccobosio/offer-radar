@@ -80,11 +80,12 @@ class BotInterface {
       // Auto-register channel if available (register even if message is short)
       if (channelId !== 0) {
         try {
+          const channelUsername = msg.forward_from_chat?.username || null;
           await this.db.run(
-            'INSERT OR IGNORE INTO channels (channel_id, channel_name) VALUES (?, ?)',
-            [channelId, channelName]
+            'INSERT OR IGNORE INTO channels (channel_id, channel_name, channel_username) VALUES (?, ?, ?)',
+            [channelId, channelName, channelUsername]
           );
-          logger.info(`📡 Auto-registered channel: ${channelName}`);
+          logger.info(`📡 Auto-registered channel: ${channelName}${channelUsername ? ' (@' + channelUsername + ')' : ''}`);
         } catch (err) {
           logger.debug(`Channel ${channelName} already registered`);
         }
@@ -476,8 +477,8 @@ How it works:
       const channelId = parseInt(crypto.createHash('md5').update(channelName).digest('hex').substring(0, 8), 16);
 
       await this.db.run(
-        'INSERT OR IGNORE INTO channels (channel_id, channel_name) VALUES (?, ?)',
-        [channelId, channelName]
+        'INSERT OR IGNORE INTO channels (channel_id, channel_name, channel_username) VALUES (?, ?, ?)',
+        [channelId, channelName, null]
       );
 
       await this.reply(
