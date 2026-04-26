@@ -108,7 +108,7 @@ class BotInterface {
         },
         {
           command: 'add_channel',
-          description: 'Register a channel to monitor (format: /add_channel name)'
+          description: 'Forward a message to auto-register channel'
         },
         {
           command: 'channels',
@@ -116,7 +116,7 @@ class BotInterface {
         },
         {
           command: 'add_interest',
-          description: 'Add keyword to track (format: /add_interest keyword category)'
+          description: 'Add keyword to track (format: /add_interest keyword)'
         },
         {
           command: 'my_interests',
@@ -161,6 +161,7 @@ class BotInterface {
   async handleForwardedMessage(msg) {
     try {
       const channelName = msg.forward_from_chat?.title || 'Forwarded';
+      const channelId = msg.forward_from_chat?.id || 0;
       const text = msg.text;
 
       if (!text || text.length < config.MIN_MESSAGE_LENGTH) {
@@ -170,10 +171,23 @@ class BotInterface {
 
       logger.info(`📨 Processing forwarded message from ${channelName}`);
 
+      // Auto-register channel if not already registered
+      if (channelId !== 0) {
+        try {
+          await this.db.run(
+            'INSERT OR IGNORE INTO channels (channel_id, channel_name) VALUES (?, ?)',
+            [channelId, channelName]
+          );
+          logger.info(`📡 Auto-registered channel: ${channelName}`);
+        } catch (err) {
+          logger.debug(`Channel ${channelName} already registered`);
+        }
+      }
+
       // Store the forwarded offer in the database
       const offer = {
         message_id: msg.message_id,
-        channel_id: msg.forward_from_chat?.id || 0,
+        channel_id: channelId,
         channel_name: channelName,
         raw_text: text,
         created_at: new Date(),
@@ -289,25 +303,27 @@ Tap the buttons below or use commands:`;
 
     const args = (match[1] || '').trim().split(/\s+/);
 
-    if (args.length < 2 || !args[0]) {
+    if (!args[0]) {
       await this.reply(
         msg,
-        `❌ Need both keyword AND category!\n\nFormat: /add_interest [keyword] [category]\n\nExamples:\n` +
-        `/add_interest AirPods electronics\n` +
-        `/add_interest iPhone phones\n` +
-        `/add_interest macbook computers`
+        `❌ Need at least a keyword!\n\nFormats:\n` +
+        `/add_interest AirPods\n` +
+        `/add_interest AirPods electronics\n\n` +
+        `If you don't specify a category, I'll use "General"`
       );
       return;
     }
 
     const keyword = args[0];
-    const category = args.slice(1).join(' ');
+    // If only keyword provided, use "General" as category
+    const category = args.length > 1 ? args.slice(1).join(' ') : 'General';
 
     try {
       await this.db.insertInterest(keyword, category);
+      const categoryText = args.length > 1 ? `→ ${category}` : '(General category)';
       await this.reply(
         msg,
-        `✅ Added interest:\n\n*${keyword}* → *${category}*\n\nI'll now track this for you!`
+        `✅ Added interest:\n\n${keyword} ${categoryText}\n\nI'll now track this for you!`
       );
       logger.info(`Added interest: ${keyword} → ${category}`);
     } catch (err) {
@@ -474,9 +490,12 @@ Tap the buttons below or use commands:`;
     const text = `📖 Available Commands
 
 Interest Management:
-/add_interest [keyword] [category]
-  Add a new keyword to track
-  Example: /add_interest airpods electronics
+Interest Management:
+/add_interest [keyword]
+  Add a keyword to track (category is optional, defaults to "General")
+  Examples:
+  /add_interest AirPods
+  /add_interest AirPods electronics
 
 /my_interests
   List all tracked keywords
@@ -485,9 +504,8 @@ Interest Management:
   Stop tracking a keyword
 
 Channel Management:
-/add_channel [channel_name]
-  Register a channel to monitor
-  Example: /add_channel offers_electronics
+📡 Channels are auto-registered when you forward messages!
+   Just forward offers from your channels - they'll be added automatically.
 
 /channels
   List all monitored channels
@@ -504,13 +522,14 @@ Information:
   Show this help message
 
 How it works:
-1️⃣ Add channels from your burner account
-2️⃣ Forward messages from channels to this bot
+1️⃣ Just forward messages from your channels (auto-registers!)
+2️⃣ Add interests: /add_interest AirPods
 3️⃣ Every day at 10 AM, I analyze offers
 4️⃣ Only valuable offers are sent to you
 
 💡 Tips:
-• Add multiple keywords in one category
+• You don't need to specify category - I'll use "General"
+• Forward actively - more offers = better learning
 • Be specific with keywords for better matches
 • Check /stats regularly to see progress`;
 
@@ -627,7 +646,7 @@ How it works:
           await this.bot.answerCallbackQuery(query.id);
           await this.bot.sendMessage(
             msg.chat.id,
-            '📝 Send me: /add_interest [keyword] [category]\n\nExample:\n/add_interest airpods electronics'
+            '📝 Send me: /add_interest [keyword]\n\nExamples:\n/add_interest AirPods\n/add_interest "iPhone 15"\n\n(Category is optional - defaults to "General")'
           );
           break;
 
@@ -635,7 +654,7 @@ How it works:
           await this.bot.answerCallbackQuery(query.id);
           await this.bot.sendMessage(
             msg.chat.id,
-            '📝 Send me: /add_channel [channel_name]\n\nExample:\n/add_channel offers_electronics'
+            '📝 Just forward a message from the channel you want to monitor!\nChannels are auto-registered. 📡'
           );
           break;
 
