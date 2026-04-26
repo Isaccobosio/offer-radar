@@ -22,6 +22,7 @@ class BotInterface {
       });
 
       this.setupHandlers();
+      this.registerCommands();
       logger.info('✅ Bot interface initialized');
       return this.bot;
     } catch (err) {
@@ -93,6 +94,58 @@ class BotInterface {
     });
 
     logger.info('Bot handlers registered');
+  }
+
+  /**
+   * Register bot commands with Telegram for autocomplete
+   */
+  async registerCommands() {
+    try {
+      const commands = [
+        {
+          command: 'start',
+          description: 'Show main menu'
+        },
+        {
+          command: 'add_channel',
+          description: 'Register a channel to monitor (format: /add_channel name)'
+        },
+        {
+          command: 'channels',
+          description: 'View monitored channels'
+        },
+        {
+          command: 'add_interest',
+          description: 'Add keyword to track (format: /add_interest keyword category)'
+        },
+        {
+          command: 'my_interests',
+          description: 'View tracked keywords'
+        },
+        {
+          command: 'remove_interest',
+          description: 'Stop tracking keyword (format: /remove_interest keyword)'
+        },
+        {
+          command: 'search',
+          description: 'Search past offers (format: /search keyword)'
+        },
+        {
+          command: 'stats',
+          description: 'View statistics'
+        },
+        {
+          command: 'help',
+          description: 'Show all commands'
+        }
+      ];
+
+      await this.bot.setMyCommands(commands);
+      logger.info('✅ Bot commands registered with Telegram');
+    } catch (err) {
+      logger.warn('Failed to register bot commands:', err.message);
+      // Continue anyway - not critical
+    }
   }
 
   /**
