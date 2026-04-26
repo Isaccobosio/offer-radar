@@ -133,6 +133,14 @@ class Backfiller {
       try {
         testMsgs = await this.client.getMessages(entity, { limit: 5 });
         logger.info(`🔍 getMessages test returned ${testMsgs?.length || 0} messages`);
+        if (testMsgs && testMsgs.length > 0) {
+          try {
+            const sample = testMsgs.slice(0,5).map(m => `${m.id || m.message?.id || 'id?'}@${m.date && (m.date.toISOString ? m.date.toISOString() : new Date(m.date).toISOString())}`);
+            logger.info(`🔍 getMessages sample: ${sample.join(', ')}`);
+          } catch (e) {
+            // ignore sample formatting errors
+          }
+        }
       } catch (e) {
         logger.warn('getMessages test failed:', e.message || e);
       }
@@ -148,6 +156,14 @@ class Backfiller {
           if (i >= 5) break;
         }
         logger.info(`🔍 iterMessages test yielded ${testMsgs.length} messages`);
+        if (testMsgs && testMsgs.length > 0) {
+          try {
+            const sample2 = testMsgs.slice(0,5).map(m => `${m.id || m.message?.id || 'id?'}@${m.date && (m.date.toISOString ? m.date.toISOString() : new Date(m.date).toISOString())}`);
+            logger.info(`🔍 iterMessages sample: ${sample2.join(', ')}`);
+          } catch (e) {
+            // ignore
+          }
+        }
       } catch (e) {
         logger.warn('iterMessages test failed:', e.message || e);
       }
