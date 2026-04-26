@@ -75,6 +75,11 @@ function attachHandlers(botInterface) {
     botInterface.handleHelp(msg);
   });
 
+  // /offers (view recent offers)
+  bot.onText(/^\/offers(@\w+)?(\s|$)/i, (msg) => {
+    botInterface.handleOffers(msg);
+  });
+
   // callback_query
   bot.on('callback_query', (query) => {
     botInterface.handleCallbackQuery(query);
@@ -105,6 +110,7 @@ async function registerCommands(botInterface) {
       { command: 'my_interests', description: 'View tracked keywords' },
       { command: 'remove_interest', description: 'Stop tracking keyword (format: /remove_interest keyword)' },
       { command: 'search', description: 'Search past offers (format: /search keyword)' },
+      { command: 'offers', description: 'View recent offers found' },
       { command: 'analyze', description: 'Run manual analysis now (admin only)' },
       { command: 'stats', description: 'View statistics' },
       { command: 'help', description: 'Show all commands' }

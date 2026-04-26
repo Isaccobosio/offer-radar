@@ -395,6 +395,45 @@ Tap the buttons below or use commands:`;
     }
   }
 
+  async handleOffers(msg) {
+    if (!this.isFromMainAccount(msg)) {
+      await this.reply(msg, '❌ Unauthorized');
+      return;
+    }
+
+    try {
+      const offers = await this.db.all(`
+        SELECT id, channel_name, raw_text, confidence_score, status, created_at 
+        FROM offers 
+        ORDER BY created_at DESC 
+        LIMIT 20
+      `);
+
+      if (offers.length === 0) {
+        await this.reply(msg, `📭 No offers found yet. Forward messages from your channels to start!`);
+        return;
+      }
+
+      let text = `📬 Recent Offers (${offers.length} total)\n\n`;
+      
+      offers.forEach((offer, idx) => {
+        const date = new Date(offer.created_at).toLocaleDateString();
+        const status = offer.status === 'processed' ? '✅' : offer.status === 'pending' ? '⏳' : '❌';
+        const confidence = offer.confidence_score ? `${offer.confidence_score}%` : 'N/A';
+        
+        text += `${idx + 1}. ${status} ${offer.channel_name}\n`;
+        text += `   ${offer.raw_text.substring(0, 80)}${offer.raw_text.length > 80 ? '...' : ''}\n`;
+        text += `   Confidence: ${confidence} | ${date}\n\n`;
+      });
+
+      await this.bot.sendMessage(msg.chat.id, text, {
+        reply_to_message_id: msg.message_id
+      });
+    } catch (err) {
+      await this.reply(msg, `❌ Error: ${err.message}`);
+    }
+  }
+
   async handleHelp(msg) {
     if (!this.isFromMainAccount(msg)) {
       await this.reply(msg, '❌ Unauthorized');
@@ -428,6 +467,9 @@ Searching:
 /search [keyword]
   Search past offers by keyword
 
+/offers
+  View recent offers (last 20 found)
+
 Information:
 /stats
   View statistics and summary
@@ -442,7 +484,8 @@ How it works:
 4️⃣ Only valuable offers are sent to you
 
 💡 Tips:
-• You don't need to specify category - I'll use "General"
+• Check /offers to see recent messages your bot has received
+• Use /search to find specific offers
 • Forward actively - more offers = better learning
 • Be specific with keywords for better matches
 • Check /stats regularly to see progress`;
