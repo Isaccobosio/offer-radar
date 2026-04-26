@@ -7,6 +7,7 @@ const Database = require('./db');
 const UserBotClient = require('./userbot/client');
 const GroqAnalyzer = require('./llm');
 const BatchProcessor = require('./scheduler');
+const cron = require('node-cron');
 const BotInterface = require('./bot');
 const Backfiller = require('./userbot/history');
 
@@ -109,6 +110,29 @@ class OfferRadar {
 
       // Start listening
       await this.startListening();
+
+      // Schedule periodic backfill (if MTProto backfiller available)
+      if (this.backfiller) {
+        try {
+          cron.schedule(config.BACKFILL_SCHEDULE, async () => {
+            try {
+              const channels = await this.db.all('SELECT channel_id, channel_name FROM channels');
+              if (channels && channels.length > 0) {
+                logger.info('🔁 Periodic backfill started');
+                await this.backfiller.backfillChannels(channels, config.OFFER_RETENTION_DAYS, this.db);
+                logger.info('🔁 Periodic backfill completed');
+              } else {
+                logger.debug('Periodic backfill: no channels configured');
+              }
+            } catch (err) {
+              logger.error('Periodic backfill failed:', err.message || err);
+            }
+          });
+          logger.info(`🔁 Periodic backfill scheduled: ${config.BACKFILL_SCHEDULE}`);
+        } catch (err) {
+          logger.warn('Failed to schedule periodic backfill:', err.message || err);
+        }
+      }
     } catch (err) {
       logger.error('Initialization failed:', err.message);
       await this.cleanup();

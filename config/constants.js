@@ -26,6 +26,7 @@ module.exports = {
   // Schedules
   BATCH_SCHEDULE: process.env.BATCH_SCHEDULE || '0 10 * * *',
   CLEANUP_SCHEDULE: process.env.CLEANUP_SCHEDULE || '0 23 * * *',
+  BACKFILL_SCHEDULE: process.env.BACKFILL_SCHEDULE || '*/5 * * * *',
 
   // Rate Limiting
   GROQ_REQUEST_DELAY_MS: 1000, // 1 second between Groq requests
