@@ -239,7 +239,10 @@ Tap the buttons below or use commands:`;
     if (args.length < 2 || !args[0]) {
       await this.reply(
         msg,
-        `❌ Usage: /add_interest [keyword] [category]\n\nExample:\n/add_interest airpods electronics`
+        `❌ Need both keyword AND category!\n\nFormat: /add_interest [keyword] [category]\n\nExamples:\n` +
+        `/add_interest AirPods electronics\n` +
+        `/add_interest iPhone phones\n` +
+        `/add_interest macbook computers`
       );
       return;
     }
@@ -326,7 +329,7 @@ Tap the buttons below or use commands:`;
     const keyword = (match[1] || '').trim();
 
     if (!keyword) {
-      await this.reply(msg, `❌ Usage: /remove_interest [keyword]\n\nExample:\n/remove_interest airpods`);
+      await this.reply(msg, `❌ Need keyword!\n\nFormat: /remove_interest [keyword]\n\nExample:\n/remove_interest AirPods`);
       return;
     }
 
@@ -348,7 +351,7 @@ Tap the buttons below or use commands:`;
     const query = (match[1] || '').trim();
 
     if (!query) {
-      await this.reply(msg, `❌ Usage: /search [keyword]\n\nExample:\n/search airpods`);
+      await this.reply(msg, `❌ Need search keyword!\n\nFormat: /search [keyword]\n\nExamples:\n/search AirPods\n/search iPhone\n/search discount`);
       return;
     }
 
@@ -474,7 +477,10 @@ How it works:
     if (!channelName) {
       await this.reply(
         msg,
-        `❌ Usage: /add_channel [channel_name]\n\nExample:\n/add_channel offers_electronics`
+        `❌ Need channel name!\n\nFormat: /add_channel [channel_name]\n\nExamples:\n` +
+        `/add_channel offers_electronics\n` +
+        `/add_channel discounts_deals\n` +
+        `/add_channel tech_offers`
       );
       return;
     }
