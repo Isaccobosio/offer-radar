@@ -77,13 +77,18 @@ class OfferRadar {
       this.processor.startJobs();
 
       // Initialize optional backfiller (MTProto) if session is available
+      // Set TELEGRAM_SESSION to empty string in .env to disable backfilling
       try {
-        this.backfiller = new Backfiller();
-        if (process.env.TELEGRAM_SESSION) {
+        this.backfiller = null;
+        if (process.env.TELEGRAM_SESSION && process.env.TELEGRAM_SESSION.trim() !== '') {
+          this.backfiller = new Backfiller();
           await this.backfiller.init();
           if (this.bot && typeof this.bot.setBackfiller === 'function') {
             this.bot.setBackfiller(this.backfiller);
           }
+          logger.info('✅ Backfiller enabled');
+        } else {
+          logger.info('📝 Backfiller disabled - set TELEGRAM_SESSION in .env to enable');
         }
       } catch (err) {
         logger.warn('Backfiller initialization failed:', err.message || err);
