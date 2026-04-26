@@ -99,7 +99,26 @@ class OfferRadar {
       // Run initial backfill for all channels (last N days) if backfiller available
       if (this.backfiller) {
         try {
-          const channels = await this.db.all('SELECT channel_id, channel_name, channel_username FROM channels');
+          let channels = await this.db.all('SELECT channel_id, channel_name, channel_username FROM channels');
+
+          // Try to enrich missing usernames via Bot API (if bot has access to the chat)
+          if (channels && channels.length > 0 && this.bot && this.bot.bot && typeof this.bot.bot.getChat === 'function') {
+            for (const ch of channels) {
+              if (!ch.channel_username) {
+                try {
+                  const chatInfo = await this.bot.bot.getChat(ch.channel_id);
+                  if (chatInfo && chatInfo.username) {
+                    await this.db.run('UPDATE channels SET channel_username = ? WHERE channel_id = ?', [chatInfo.username, ch.channel_id]);
+                    ch.channel_username = chatInfo.username;
+                    logger.info(`🔁 Populated username for channel ${ch.channel_name}: @${chatInfo.username}`);
+                  }
+                } catch (err) {
+                  logger.debug(`Bot cannot getChat(${ch.channel_id}): ${err.message}`);
+                }
+              }
+            }
+          }
+
           if (channels.length > 0) {
             await this.backfiller.backfillChannels(channels, config.OFFER_RETENTION_DAYS, this.db);
           }
@@ -116,7 +135,26 @@ class OfferRadar {
         try {
           cron.schedule(config.BACKFILL_SCHEDULE, async () => {
             try {
-              const channels = await this.db.all('SELECT channel_id, channel_name, channel_username FROM channels');
+              let channels = await this.db.all('SELECT channel_id, channel_name, channel_username FROM channels');
+
+              // Enrich usernames using bot.getChat where possible
+              if (channels && channels.length > 0 && this.bot && this.bot.bot && typeof this.bot.bot.getChat === 'function') {
+                for (const ch of channels) {
+                  if (!ch.channel_username) {
+                    try {
+                      const chatInfo = await this.bot.bot.getChat(ch.channel_id);
+                      if (chatInfo && chatInfo.username) {
+                        await this.db.run('UPDATE channels SET channel_username = ? WHERE channel_id = ?', [chatInfo.username, ch.channel_id]);
+                        ch.channel_username = chatInfo.username;
+                        logger.info(`🔁 Populated username for channel ${ch.channel_name}: @${chatInfo.username}`);
+                      }
+                    } catch (err) {
+                      logger.debug(`Bot cannot getChat(${ch.channel_id}): ${err.message}`);
+                    }
+                  }
+                }
+              }
+
               if (channels && channels.length > 0) {
                 logger.info('🔁 Periodic backfill started');
                 await this.backfiller.backfillChannels(channels, config.OFFER_RETENTION_DAYS, this.db);
