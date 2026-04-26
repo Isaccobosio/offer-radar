@@ -78,15 +78,32 @@ class Backfiller {
     try {
       // Prefer numeric channel_id if present
       if (channel.channel_id && Math.abs(channel.channel_id) > 1000) {
-        entity = await this.client.getEntity(channel.channel_id);
-      } else if (channel.channel_name) {
-        // Try username or invite link
+        try {
+          // Use absolute value to avoid -100... Bot API prefix issues
+          const idCandidate = Math.abs(channel.channel_id);
+          entity = await this.client.getEntity(idCandidate);
+        } catch (errId) {
+          logger.warn(`Could not resolve channel by numeric id ${channel.channel_id}: ${errId.message || errId}`);
+          entity = null;
+        }
+      }
+
+      // If numeric resolution failed or wasn't attempted, try by channel name (username) when possible
+      if (!entity && channel.channel_name) {
         let username = channel.channel_name;
+        // Only try to form a username if channel_name looks like a handle (no spaces)
         if (!username.startsWith('@') && !username.includes(' ')) {
           username = '@' + username;
         }
-        entity = await this.client.getEntity(username);
-      } else {
+        try {
+          entity = await this.client.getEntity(username);
+        } catch (errName) {
+          logger.warn(`Could not resolve channel by name ${channel.channel_name}: ${errName.message || errName}`);
+          entity = null;
+        }
+      }
+
+      if (!entity) {
         logger.warn('No usable identifier for channel, skipping backfill');
         return;
       }
