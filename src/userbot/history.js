@@ -114,6 +114,52 @@ class Backfiller {
 
     logger.info(`🔁 Backfilling ${channel.channel_name || channel.channel_id} up to ${days} days`);
 
+    // Diagnostic: inspect resolved entity and test simple fetch
+    try {
+      const entSummary = {
+        id: entity && (entity.id || entity.channel_id || (entity.peer && entity.peer.channel_id)) || null,
+        username: entity && (entity.username || (entity.peer && entity.peer.username)) || null,
+        title: entity && (entity.title || null) || null,
+        className: entity && (entity.className || (entity.constructor && entity.constructor.name)) || null,
+      };
+      logger.info(`🔍 Resolved entity: ${JSON.stringify(entSummary)}`);
+    } catch (e) {
+      logger.debug('Failed to serialize entity for diagnostics', e.message || e);
+    }
+
+    // Quick test: try getMessages or iterMessages to see if the session can see any messages
+    let testMsgs = [];
+    if (typeof this.client.getMessages === 'function') {
+      try {
+        testMsgs = await this.client.getMessages(entity, { limit: 5 });
+        logger.info(`🔍 getMessages test returned ${testMsgs?.length || 0} messages`);
+      } catch (e) {
+        logger.warn('getMessages test failed:', e.message || e);
+      }
+    }
+
+    if ((!testMsgs || testMsgs.length === 0) && typeof this.client.iterMessages === 'function') {
+      try {
+        let i = 0;
+        for await (const m of this.client.iterMessages(entity, { limit: 5 })) {
+          if (!m) continue;
+          testMsgs.push(m);
+          i++;
+          if (i >= 5) break;
+        }
+        logger.info(`🔍 iterMessages test yielded ${testMsgs.length} messages`);
+      } catch (e) {
+        logger.warn('iterMessages test failed:', e.message || e);
+      }
+    }
+
+    if (!testMsgs || testMsgs.length === 0) {
+      logger.warn(`No messages visible to MTProto session for ${channel.channel_name || channel.channel_id}. Ensure the burner account is joined or the channel is public.`);
+      logger.info(`🔎 Backfill summary for ${channel.channel_name || channel.channel_id}: scanned=0, added=0, skippedProcessed=0, skippedEmpty=0, latest=N/A, earliest=N/A`);
+      logger.info(`✅ Backfill complete for ${channel.channel_name || channel.channel_id} — 0 new offers added`);
+      return 0;
+    }
+
     // Counters for diagnostics
     let scanned = 0;
     let added = 0;
