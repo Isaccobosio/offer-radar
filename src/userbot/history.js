@@ -127,13 +127,16 @@ class Backfiller {
       logger.debug('Failed to serialize entity for diagnostics', e.message || e);
     }
 
-    // Quick test: try getMessages or iterMessages to see if the session can see any messages
+     // Quick test: try getMessages or iterMessages to see if the session can see any messages
     let testMsgs = [];
+    let methodUsed = null; // Track which method worked
+    
     if (typeof this.client.getMessages === 'function') {
       try {
         testMsgs = await this.client.getMessages(entity, { limit: 5 });
         logger.info(`🔍 getMessages test returned ${testMsgs?.length || 0} messages`);
         if (testMsgs && testMsgs.length > 0) {
+          methodUsed = 'getMessages';
           try {
             const sample = testMsgs.slice(0,5).map(m => `${m.id || m.message?.id || 'id?'}@${m.date && (m.date.toISOString ? m.date.toISOString() : new Date(m.date).toISOString())}`);
             logger.info(`🔍 getMessages sample: ${sample.join(', ')}`);
@@ -157,6 +160,7 @@ class Backfiller {
         }
         logger.info(`🔍 iterMessages test yielded ${testMsgs.length} messages`);
         if (testMsgs && testMsgs.length > 0) {
+          methodUsed = 'iterMessages';
           try {
             const sample2 = testMsgs.slice(0,5).map(m => `${m.id || m.message?.id || 'id?'}@${m.date && (m.date.toISOString ? m.date.toISOString() : new Date(m.date).toISOString())}`);
             logger.info(`🔍 iterMessages sample: ${sample2.join(', ')}`);
@@ -185,8 +189,9 @@ class Backfiller {
     let earliestDate = null;
 
     try {
-      // Use iterator to traverse messages (newest -> oldest)
-      if (typeof this.client.iterMessages === 'function') {
+      // Use the method that worked in the test
+      if (methodUsed === 'iterMessages' && typeof this.client.iterMessages === 'function') {
+        logger.debug(`Using iterMessages for real fetch (${channel.channel_name})`);
         for await (const msg of this.client.iterMessages(entity, { limit: 1000 })) {
           if (!msg) continue;
           // msg.date is a Date object
@@ -231,8 +236,9 @@ class Backfiller {
           }
           added++;
         }
-      } else {
-        // Fallback: try getMessages in pages
+      } else if (methodUsed === 'getMessages' || typeof this.client.getMessages === 'function') {
+        // Use getMessages (which worked in the test)
+        logger.debug(`Using getMessages for real fetch (${channel.channel_name})`);
         let offsetId = 0;
         const limit = 100;
         while (true) {
