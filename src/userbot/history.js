@@ -49,20 +49,22 @@ class Backfiller {
   /**
    * Backfill multiple channels. `channels` is an array of { channel_id, channel_name }
    */
-  async backfillChannels(channels = [], days = 14, db) {
-    if (!this.connected) {
-      logger.warn('Backfiller not connected - skipping backfill');
-      return;
-    }
+   async backfillChannels(channels = [], days = 14, db) {
+     if (!this.connected) {
+       logger.warn('Backfiller not connected - skipping backfill');
+       return;
+     }
 
-    for (const ch of channels) {
-      try {
-        await this.backfillChannel(ch, days, db);
-      } catch (err) {
-        logger.warn(`Backfill failed for ${ch.channel_name || ch.channel_id}: ${err.message}`);
-      }
-    }
-  }
+     for (const ch of channels) {
+       try {
+         await this.backfillChannel(ch, days, db);
+         // Add 3-second delay between channels to avoid rate limiting
+         await new Promise(resolve => setTimeout(resolve, 3000));
+       } catch (err) {
+         logger.warn(`Backfill failed for ${ch.channel_name || ch.channel_id}: ${err.message}`);
+       }
+     }
+   }
 
   /**
    * Backfill a single channel for the last `days` days.
@@ -127,18 +129,18 @@ class Backfiller {
       logger.debug('Failed to serialize entity for diagnostics', e.message || e);
     }
 
-     // Quick test: try getMessages or iterMessages to see if the session can see any messages
+    // Quick test: try getMessages or iterMessages to see if the session can see any messages
     let testMsgs = [];
     let methodUsed = null; // Track which method worked
     
     if (typeof this.client.getMessages === 'function') {
       try {
-        testMsgs = await this.client.getMessages(entity, { limit: 5 });
+        testMsgs = await this.client.getMessages(entity, { limit: 3 });
         logger.info(`🔍 getMessages test returned ${testMsgs?.length || 0} messages`);
         if (testMsgs && testMsgs.length > 0) {
           methodUsed = 'getMessages';
           try {
-            const sample = testMsgs.slice(0,5).map(m => `${m.id || m.message?.id || 'id?'}@${m.date && (m.date.toISOString ? m.date.toISOString() : new Date(m.date).toISOString())}`);
+            const sample = testMsgs.slice(0,3).map(m => `${m.id || m.message?.id || 'id?'}@${m.date && (m.date.toISOString ? m.date.toISOString() : new Date(m.date).toISOString())}`);
             logger.info(`🔍 getMessages sample: ${sample.join(', ')}`);
           } catch (e) {
             // ignore sample formatting errors
@@ -152,17 +154,17 @@ class Backfiller {
     if ((!testMsgs || testMsgs.length === 0) && typeof this.client.iterMessages === 'function') {
       try {
         let i = 0;
-        for await (const m of this.client.iterMessages(entity, { limit: 5 })) {
+        for await (const m of this.client.iterMessages(entity, { limit: 3 })) {
           if (!m) continue;
           testMsgs.push(m);
           i++;
-          if (i >= 5) break;
+          if (i >= 3) break;
         }
         logger.info(`🔍 iterMessages test yielded ${testMsgs.length} messages`);
         if (testMsgs && testMsgs.length > 0) {
           methodUsed = 'iterMessages';
           try {
-            const sample2 = testMsgs.slice(0,5).map(m => `${m.id || m.message?.id || 'id?'}@${m.date && (m.date.toISOString ? m.date.toISOString() : new Date(m.date).toISOString())}`);
+            const sample2 = testMsgs.slice(0,3).map(m => `${m.id || m.message?.id || 'id?'}@${m.date && (m.date.toISOString ? m.date.toISOString() : new Date(m.date).toISOString())}`);
             logger.info(`🔍 iterMessages sample: ${sample2.join(', ')}`);
           } catch (e) {
             // ignore
@@ -192,7 +194,7 @@ class Backfiller {
       // Use the method that worked in the test
       if (methodUsed === 'iterMessages' && typeof this.client.iterMessages === 'function') {
         logger.debug(`Using iterMessages for real fetch (${channel.channel_name})`);
-        for await (const msg of this.client.iterMessages(entity, { limit: 1000 })) {
+        for await (const msg of this.client.iterMessages(entity, { limit: 100 })) {
           if (!msg) continue;
           // msg.date is a Date object
           if (msg.date < dateLimit) break;
