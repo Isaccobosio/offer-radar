@@ -5,7 +5,12 @@ const config = require('../config/constants');
 // Import modules
 const Database = require('./db');
 const UserBotClient = require('./userbot/client');
-const GroqAnalyzer = require('./llm');
+let AnalyzerClass;
+if (process.env.OPEN_ROUTER_API_KEY) {
+  AnalyzerClass = require('./llm/openrouter');
+} else {
+  AnalyzerClass = require('./llm');
+}
 const BatchProcessor = require('./scheduler');
 const cron = require('node-cron');
 const BotInterface = require('./bot');
@@ -42,20 +47,29 @@ class OfferRadar {
       this.userbot = new UserBotClient(this.db);
       await this.userbot.connect();
 
-      // Initialize LLM (only if API key provided)
-      if (process.env.GROQ_API_KEY) {
-        logger.info('🧠 Initializing Groq analyzer...');
-        this.llm = new GroqAnalyzer();
+      // Initialize LLM (OpenRouter preferred, fallback to Groq)
+      if (process.env.OPEN_ROUTER_API_KEY) {
+        logger.info('🧠 Initializing OpenRouter analyzer...');
+        this.llm = new AnalyzerClass();
         try {
           await this.llm.test();
         } catch (err) {
-          // If Groq is inaccessible or the key is invalid, don't abort the whole app.
+          logger.warn('OpenRouter initialization failed — continuing with LLM disabled');
+          logger.debug(err.message || err);
+          this.llm = null;
+        }
+      } else if (process.env.GROQ_API_KEY) {
+        logger.info('🧠 Initializing Groq analyzer...');
+        this.llm = new AnalyzerClass();
+        try {
+          await this.llm.test();
+        } catch (err) {
           logger.warn('GROQ initialization failed — continuing with LLM disabled');
           logger.debug(err.message || err);
           this.llm = null;
         }
       } else {
-        logger.warn('GROQ_API_KEY not set — LLM features disabled');
+        logger.warn('No LLM API key set — LLM features disabled');
         this.llm = null;
       }
 
@@ -69,6 +83,7 @@ class OfferRadar {
       logger.info('⚙️  Initializing batch processor...');
       this.processor = new BatchProcessor(this.llm, this.db, {
         sendMessage: (msg) => this.bot.sendMessage(msg),
+        sendMessageToUser: (id, msg) => this.bot.sendMessageToUser(id, msg),
       });
       // Expose processor to bot for manual trigger
       if (this.bot && typeof this.bot.setProcessor === 'function') {
@@ -196,8 +211,8 @@ class OfferRadar {
       }
     }
 
-    if (!process.env.GROQ_API_KEY) {
-      warnings.push('GROQ_API_KEY not found - LLM features disabled');
+    if (!process.env.GROQ_API_KEY && !process.env.OPEN_ROUTER_API_KEY) {
+      warnings.push('No LLM API key (GROQ_API_KEY or OPEN_ROUTER_API_KEY) found - LLM features disabled');
     }
 
     if (!process.env.BOT_TOKEN) {

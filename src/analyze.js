@@ -4,7 +4,12 @@ const logger = require('./utils/logger');
 const config = require('../config/constants');
 
 const Database = require('./db');
-const GroqAnalyzer = require('./llm');
+let AnalyzerClass;
+if (process.env.OPEN_ROUTER_API_KEY) {
+  AnalyzerClass = require('./llm/openrouter');
+} else {
+  AnalyzerClass = require('./llm');
+}
 const BatchProcessor = require('./scheduler');
 
 async function main() {
@@ -18,13 +23,13 @@ async function main() {
     process.exit(1);
   }
 
-  if (!process.env.GROQ_API_KEY) {
-    logger.error('GROQ_API_KEY is not set. Aborting analyze.');
+  if (!process.env.OPEN_ROUTER_API_KEY && !process.env.GROQ_API_KEY) {
+    logger.error('No LLM API key set (OPEN_ROUTER_API_KEY or GROQ_API_KEY). Aborting analyze.');
     await db.close();
     process.exit(1);
   }
 
-  const llm = new GroqAnalyzer();
+  const llm = new AnalyzerClass();
   try {
     await llm.test();
   } catch (err) {

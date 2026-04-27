@@ -9,7 +9,12 @@ module.exports = {
 
   // LLM
   GROQ_API_KEY: process.env.GROQ_API_KEY,
-  GROQ_MODEL: 'mixtral-8x7b-32768',
+  GROQ_MODEL: 'llama-3.3-70b-versatile',
+  // OpenRouter (optional) - set OPEN_ROUTER_API_KEY in .env to enable
+  OPEN_ROUTER_API_KEY: process.env.OPEN_ROUTER_API_KEY,
+  OPEN_ROUTER_MODEL: process.env.OPEN_ROUTER_MODEL || 'gpt-4o-mini',
+  OPEN_ROUTER_ENDPOINT: process.env.OPEN_ROUTER_ENDPOINT || 'https://api.openrouter.ai/v1/chat/completions',
+  OPEN_ROUTER_REQUEST_DELAY_MS: process.env.OPEN_ROUTER_REQUEST_DELAY_MS ? parseInt(process.env.OPEN_ROUTER_REQUEST_DELAY_MS, 10) : 1000,
 
   // Bot
   BOT_TOKEN: process.env.BOT_TOKEN,
@@ -18,7 +23,7 @@ module.exports = {
   // Database
   DATABASE_PATH: process.env.DATABASE_PATH || './data/offers.db',
   OFFER_RETENTION_DAYS: 14,
-  CONFIDENCE_THRESHOLD: 70,
+  CONFIDENCE_THRESHOLD: 50,
 
   // Logging
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
