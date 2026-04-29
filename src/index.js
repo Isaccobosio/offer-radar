@@ -30,6 +30,7 @@ class OfferRadar {
   async initialize() {
     try {
       logger.info('🚀 Starting OfferRadar...');
+      logger.info(`📌 Build marker: auto-update-test-${Date.now()}`);
       logger.info('═'.repeat(50));
 
       // Validate environment
