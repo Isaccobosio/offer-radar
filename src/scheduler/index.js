@@ -100,7 +100,7 @@ class BatchProcessor {
             status = 'rejected';
           }
 
-          this.db.updateOffer(offer.id, {
+          this.db.upsertOfferBySlug(offer.id, {
             summary: analysis.summary,
             confidence_score: score,
             category: analysis.category,

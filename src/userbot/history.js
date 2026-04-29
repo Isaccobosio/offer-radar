@@ -42,12 +42,16 @@ class Backfiller {
     } catch (err) {
       logger.error('Failed to initialize MTProto client:', err.message || err);
       this.connected = false;
+      if (this.client) {
+        try { await this.client.disconnect(); } catch (_) {}
+        this.client = null;
+      }
       throw err;
     }
   }
 
   async disconnect() {
-    if (this.client && this.connected) {
+    if (this.client) {
       try {
         await this.client.disconnect();
         logger.info('Backfiller disconnected');
