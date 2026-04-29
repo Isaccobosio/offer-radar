@@ -18,6 +18,9 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
 
+    security_opt:
+      - apparmor=unconfined
+
     mem_limit: 512m
     cpus: 1.0
 
