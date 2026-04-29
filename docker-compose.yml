@@ -7,50 +7,22 @@ services:
       dockerfile: Dockerfile
     container_name: offer-radar
     restart: unless-stopped
-    
+
+    env_file: .env
+
     environment:
-      # Burner Account
-      - BURNER_PHONE=${BURNER_PHONE}
-      - API_ID=${API_ID}
-      - API_HASH=${API_HASH}
-      - TELEGRAM_SESSION=${TELEGRAM_SESSION}
-      
-      # LLM
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      
-      # Bot
-      - BOT_TOKEN=${BOT_TOKEN}
-      - MAIN_ACCOUNT_ID=${MAIN_ACCOUNT_ID}
-      
-      # Logging
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - NODE_ENV=production
-    
+
     volumes:
-      # Persist database and logs
       - ./data:/app/data
       - ./logs:/app/logs
-      - ./.env:/app/.env:ro
-    
-    # Resource limits
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 512M
-        reservations:
-          cpus: '0.5'
-          memory: 256M
-    
-    # Logging
+
+    mem_limit: 512m
+    cpus: 1.0
+
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-
-volumes:
-  data:
-    driver: local
-  logs:
-    driver: local

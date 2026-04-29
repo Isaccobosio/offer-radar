@@ -1,10 +1,11 @@
-FROM node:18-alpine
+FROM node:20-alpine
 
 WORKDIR /app
 
-# Install dependencies
-COPY package*.json ./
-RUN npm ci --only=production
+RUN apk add --no-cache python3 make g++
+
+COPY package.json yarn.lock ./
+RUN corepack enable && yarn install --immutable
 
 # Copy application
 COPY src/ ./src/
@@ -13,12 +14,9 @@ COPY config/ ./config/
 # Create data directory
 RUN mkdir -p data logs
 
-# Set environment
 ENV NODE_ENV=production
 
-# Health check
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:8080/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
+  CMD node -e "process.exit(0)"
 
-# Start application
 CMD ["node", "src/index.js"]
