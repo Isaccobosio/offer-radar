@@ -4,7 +4,7 @@ WORKDIR /app
 
 RUN apk add --no-cache python3 make g++
 
-COPY package.json yarn.lock ./
+COPY package.json yarn.lock .yarnrc.yml ./
 RUN corepack enable && yarn install --immutable
 
 # Copy application
