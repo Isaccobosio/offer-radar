@@ -4,13 +4,9 @@ const config = require('../config/constants');
 
 // Import modules
 const Database = require('./db');
-const UserBotClient = require('./userbot/client');
-let AnalyzerClass;
-if (process.env.OPEN_ROUTER_API_KEY) {
-  AnalyzerClass = require('./llm/openrouter');
-} else {
-  AnalyzerClass = require('./llm');
-}
+const WorkerBridge = require('./userbot/workerBridge');
+const AnalyzerClass = require('./llm');
+const AnalysisQueue = require('./analysis/queue');
 const BatchProcessor = require('./scheduler');
 const cron = require('node-cron');
 const BotInterface = require('./bot');
@@ -19,10 +15,12 @@ const Backfiller = require('./userbot/history');
 class OfferRadar {
   constructor() {
     this.db = null;
-    this.userbot = null;
+    this.workerBridge = null;
     this.llm = null;
+    this.analysisQueue = null;
     this.processor = null;
     this.bot = null;
+    this.backfiller = null;
     this.channelIds = [];
   }
 
@@ -42,34 +40,18 @@ class OfferRadar {
       this.db = new Database(config.DATABASE_PATH);
       await this.db.initialize();
 
-      // Initialize UserBot
-      logger.info('🤖 Initializing UserBot client...');
-      this.userbot = new UserBotClient(this.db);
-      await this.userbot.connect();
+      // Initialize WorkerBridge (GramJS runs in worker thread)
+      logger.info('🤖 Initializing GramJS worker bridge...');
+      this.workerBridge = new WorkerBridge(this.db, (offerId) => {
+        if (this.analysisQueue) this.analysisQueue.enqueue(offerId);
+      });
 
-      // Initialize LLM (OpenRouter preferred, fallback to Groq)
+      // Initialize LLM
       if (process.env.OPEN_ROUTER_API_KEY) {
-        logger.info('🧠 Initializing OpenRouter analyzer...');
+        logger.info('🧠 OpenRouter analyzer ready (skipping startup test to preserve quota)');
         this.llm = new AnalyzerClass();
-        try {
-          await this.llm.test();
-        } catch (err) {
-          logger.warn('OpenRouter initialization failed — continuing with LLM disabled');
-          logger.debug(err.message || err);
-          this.llm = null;
-        }
-      } else if (process.env.GROQ_API_KEY) {
-        logger.info('🧠 Initializing Groq analyzer...');
-        this.llm = new AnalyzerClass();
-        try {
-          await this.llm.test();
-        } catch (err) {
-          logger.warn('GROQ initialization failed — continuing with LLM disabled');
-          logger.debug(err.message || err);
-          this.llm = null;
-        }
       } else {
-        logger.warn('No LLM API key set — LLM features disabled');
+        logger.warn('OPEN_ROUTER_API_KEY not set — LLM features disabled');
         this.llm = null;
       }
 
@@ -79,15 +61,28 @@ class OfferRadar {
       this.bot.initialize();
       await this.bot.test();
 
+      // Initialize real-time analysis queue
+      this.analysisQueue = new AnalysisQueue(this.llm, this.db, {
+        sendRichCard: (id, offer, analysis) => this.bot.sendRichCard(id, offer, analysis),
+        sendInstantAlert: (id, offer, analysis) => this.bot.sendRichCard(id, offer, analysis),
+      });
+      if (this.llm) {
+        logger.info('⚡ Real-time analysis queue ready');
+      }
+
       // Initialize Batch Processor
       logger.info('⚙️  Initializing batch processor...');
       this.processor = new BatchProcessor(this.llm, this.db, {
+        bot: this.bot.bot,
         sendMessage: (msg) => this.bot.sendMessage(msg),
         sendMessageToUser: (id, msg) => this.bot.sendMessageToUser(id, msg),
       });
       // Expose processor to bot for manual trigger
       if (this.bot && typeof this.bot.setProcessor === 'function') {
         this.bot.setProcessor(this.processor);
+      }
+      if (this.bot && this.llm && typeof this.bot.setLlm === 'function') {
+        this.bot.setLlm(this.llm);
       }
       this.processor.startJobs();
 
@@ -119,16 +114,15 @@ class OfferRadar {
       // Run initial backfill for all channels (last N days) if backfiller available
       if (this.backfiller) {
         try {
-          let channels = await this.db.all('SELECT channel_id, channel_name, channel_username FROM channels');
+          let channels = this.db.all('SELECT channel_id, channel_name, channel_username FROM channels');
 
-          // Try to enrich missing usernames via Bot API (if bot has access to the chat)
           if (channels && channels.length > 0 && this.bot && this.bot.bot && typeof this.bot.bot.getChat === 'function') {
             for (const ch of channels) {
               if (!ch.channel_username) {
                 try {
                   const chatInfo = await this.bot.bot.getChat(ch.channel_id);
                   if (chatInfo && chatInfo.username) {
-                    await this.db.run('UPDATE channels SET channel_username = ? WHERE channel_id = ?', [chatInfo.username, ch.channel_id]);
+                    this.db.run('UPDATE channels SET channel_username = ? WHERE channel_id = ?', [chatInfo.username, ch.channel_id]);
                     ch.channel_username = chatInfo.username;
                     logger.info(`🔁 Populated username for channel ${ch.channel_name}: @${chatInfo.username}`);
                   }
@@ -140,11 +134,14 @@ class OfferRadar {
           }
 
           if (channels.length > 0) {
-            await this.backfiller.backfillChannels(channels, config.OFFER_RETENTION_DAYS, this.db);
+            await this.backfiller.backfillChannels(channels, config.OFFER_RETENTION_DAYS, this.db, this.analysisQueue);
           }
         } catch (err) {
           logger.warn('Initial backfill failed:', err.message || err);
         }
+
+        // Disconnect before starting live worker — same session cannot have two simultaneous connections
+        await this.backfiller.disconnect();
       }
 
       // Start listening
@@ -155,32 +152,41 @@ class OfferRadar {
         try {
           cron.schedule(config.BACKFILL_SCHEDULE, async () => {
             try {
-              let channels = await this.db.all('SELECT channel_id, channel_name, channel_username FROM channels');
+              let channels = this.db.all('SELECT channel_id, channel_name, channel_username FROM channels');
+              if (!channels || channels.length === 0) {
+                logger.debug('Periodic backfill: no channels configured');
+                return;
+              }
 
-              // Enrich usernames using bot.getChat where possible
-              if (channels && channels.length > 0 && this.bot && this.bot.bot && typeof this.bot.bot.getChat === 'function') {
-                for (const ch of channels) {
-                  if (!ch.channel_username) {
-                    try {
-                      const chatInfo = await this.bot.bot.getChat(ch.channel_id);
-                      if (chatInfo && chatInfo.username) {
-                        await this.db.run('UPDATE channels SET channel_username = ? WHERE channel_id = ?', [chatInfo.username, ch.channel_id]);
-                        ch.channel_username = chatInfo.username;
-                        logger.info(`🔁 Populated username for channel ${ch.channel_name}: @${chatInfo.username}`);
-                      }
-                    } catch (err) {
-                      logger.debug(`Bot cannot getChat(${ch.channel_id}): ${err.message}`);
+              // Stop live worker so only one MTProto session is active at a time
+              if (this.workerBridge) this.workerBridge.stop();
+
+              try {
+                await this.backfiller.init();
+
+                if (this.bot && this.bot.bot && typeof this.bot.bot.getChat === 'function') {
+                  for (const ch of channels) {
+                    if (!ch.channel_username) {
+                      try {
+                        const chatInfo = await this.bot.bot.getChat(ch.channel_id);
+                        if (chatInfo && chatInfo.username) {
+                          this.db.run('UPDATE channels SET channel_username = ? WHERE channel_id = ?', [chatInfo.username, ch.channel_id]);
+                          ch.channel_username = chatInfo.username;
+                        }
+                      } catch (_) {}
                     }
                   }
                 }
-              }
 
-              if (channels && channels.length > 0) {
                 logger.info('🔁 Periodic backfill started');
-                await this.backfiller.backfillChannels(channels, config.OFFER_RETENTION_DAYS, this.db);
+                await this.backfiller.backfillChannels(channels, config.OFFER_RETENTION_DAYS, this.db, this.analysisQueue);
                 logger.info('🔁 Periodic backfill completed');
-              } else {
-                logger.debug('Periodic backfill: no channels configured');
+              } finally {
+                await this.backfiller.disconnect();
+                // Resume live worker
+                if (this.workerBridge) {
+                  this.workerBridge.start(channels.map(c => c.channel_id));
+                }
               }
             } catch (err) {
               logger.error('Periodic backfill failed:', err.message || err);
@@ -211,8 +217,8 @@ class OfferRadar {
       }
     }
 
-    if (!process.env.GROQ_API_KEY && !process.env.OPEN_ROUTER_API_KEY) {
-      warnings.push('No LLM API key (GROQ_API_KEY or OPEN_ROUTER_API_KEY) found - LLM features disabled');
+    if (!process.env.OPEN_ROUTER_API_KEY) {
+      warnings.push('OPEN_ROUTER_API_KEY not found — LLM features disabled');
     }
 
     if (!process.env.BOT_TOKEN) {
@@ -230,7 +236,7 @@ class OfferRadar {
    */
   async loadChannels() {
     try {
-      const channels = await this.db.all('SELECT channel_id FROM channels');
+      const channels = this.db.all('SELECT channel_id FROM channels');
       this.channelIds = channels.map(c => c.channel_id);
       logger.info(`📡 Loaded ${this.channelIds.length} tracked channels`);
     } catch (err) {
@@ -239,23 +245,16 @@ class OfferRadar {
     }
   }
 
-  /**
-   * Start listening to channels
-   */
   async startListening() {
     try {
-      if (this.channelIds.length === 0) {
-        logger.warn(
-          '⚠️  No channels to monitor. Add channels with the bot interface.'
-        );
-        return;
+      if (process.env.TELEGRAM_SESSION && process.env.TELEGRAM_SESSION.trim() !== '') {
+        this.workerBridge.start(this.channelIds);
+        logger.info(`✅ GramJS worker started, watching ${this.channelIds.length} channels`);
+      } else {
+        logger.info('📝 GramJS worker disabled — set TELEGRAM_SESSION to enable live listening');
       }
-
-      await this.userbot.startListening(this.channelIds);
-      logger.info(`✅ Now listening to ${this.channelIds.length} channels`);
     } catch (err) {
-      logger.error('Failed to start listening:', err.message);
-      throw err;
+      logger.error('Failed to start worker bridge:', err.message);
     }
   }
 
@@ -264,15 +263,13 @@ class OfferRadar {
    */
   async addChannel(channelId, channelName) {
     try {
-      await this.db.run(
+      this.db.run(
         'INSERT OR IGNORE INTO channels (channel_id, channel_name, channel_username) VALUES (?, ?, ?)',
         [channelId, channelName, null]
       );
-
       if (!this.channelIds.includes(channelId)) {
         this.channelIds.push(channelId);
       }
-
       logger.info(`✅ Added channel: ${channelName} (${channelId})`);
     } catch (err) {
       logger.error('Failed to add channel:', err.message);
@@ -288,8 +285,8 @@ class OfferRadar {
 
     try {
       if (this.bot) this.bot.stop();
-      if (this.userbot) await this.userbot.disconnect();
-      if (this.db) await this.db.close();
+      if (this.workerBridge) this.workerBridge.stop();
+      if (this.db) this.db.close();
       logger.info('✅ Cleanup complete');
     } catch (err) {
       logger.error('Error during cleanup:', err.message);

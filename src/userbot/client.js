@@ -35,6 +35,8 @@ class UserBotClient {
     }
   }
 
+  setOnOfferInserted(fn) { this.onOfferInserted = fn; }
+
   /**
    * Start listening for forwarded messages
    */
@@ -78,8 +80,11 @@ class UserBotClient {
       }
 
       // Store raw offer
-      await this.db.insertOffer(offer);
+      const result = await this.db.insertOffer(offer);
       await this.db.markProcessed(offer.message_id, offer.channel_id);
+      if (typeof this.onOfferInserted === 'function') {
+        this.onOfferInserted(result.id);
+      }
 
       logger.info(`📨 New offer from ${channelName}: "${text.substring(0, 50)}..."`);
       return true;

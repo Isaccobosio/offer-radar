@@ -4,11 +4,19 @@ const config = require('../../config/constants');
 const interestCmds = require('./commands/interests');
 const channelCmds = require('./commands/channels');
 const searchCmds = require('./commands/search');
+const { sendRichCard: _sendRichCard } = require('./richCard');
+const BatchBuffer = require('./batchBuffer');
+const sessionState = require('./sessionState');
+
+function cancelKeyboard() {
+  return { inline_keyboard: [[{ text: '❌ Annulla', callback_data: 'flow:cancel' }]] };
+}
 
 class BotInterface {
   constructor(database) {
     this.db = database;
     this.bot = null;
+    this.llm = null;
     this.mainAccountId = config.MAIN_ACCOUNT_ID;
     this.processor = null;
     this.backfiller = null;
@@ -18,6 +26,7 @@ class BotInterface {
     this.bot = new TelegramBot(config.BOT_TOKEN, {
       polling: { interval: 300, autoStart: true },
     });
+    this.buffer = new BatchBuffer(this.bot, config.BATCH_BUFFER_WINDOW_MS);
     this._attachHandlers();
     this._registerCommands();
     logger.info('Bot handlers registered');
@@ -27,6 +36,7 @@ class BotInterface {
 
   setProcessor(processor) { this.processor = processor; }
   setBackfiller(backfiller) { this.backfiller = backfiller; }
+  setLlm(llm) { this.llm = llm; }
 
   isFromMainAccount(msg) {
     return (msg.from || {}).id === this.mainAccountId;
@@ -37,7 +47,7 @@ class BotInterface {
     const { id, username, first_name } = msg.from || {};
     if (!id) return null;
     try {
-      await this.db.upsertUser(id, username, first_name);
+      this.db.upsertUser(id, username, first_name);
     } catch (err) {
       logger.error('Failed to upsert user:', err.message);
     }
@@ -61,6 +71,14 @@ class BotInterface {
 
   async sendMessageToUser(telegramId, text) {
     return this.safeSend(telegramId, text, { parse_mode: 'Markdown' });
+  }
+
+  async sendRichCard(telegramId, offer, analysis) {
+    this.buffer.add(telegramId, offer, analysis);
+  }
+
+  async sendInstantAlert(telegramId, offer, analysis) {
+    return this.sendRichCard(telegramId, offer, analysis);
   }
 
   // Helper that retries without parse mode on Telegram entity parsing errors
@@ -91,6 +109,8 @@ class BotInterface {
   }
 
   stop() {
+    sessionState.stopAll();
+    if (this.buffer) this.buffer.stop();
     if (this.bot) {
       this.bot.stopPolling();
       logger.info('Bot polling stopped');
@@ -122,9 +142,9 @@ class BotInterface {
         'Monitoro i canali deal che segui e ti invio ogni giorno le offerte più rilevanti in base ai tuoi interessi.\n\n' +
         '🚀 *Come iniziare:*\n' +
         '1️⃣ *Registra un canale* — inoltra un messaggio da qualsiasi canale deal\n' +
-        '2️⃣ *Aggiungi un interesse* — `/add_interest AirPods | elettronica | Cuffie wireless, max €150`\n' +
+        '2️⃣ *Aggiungi un interesse* — tocca il pulsante o usa `/add_interest AirPods`\n' +
         '3️⃣ *Ogni giorno alle 10:00* ricevi il digest con le offerte migliori per te\n\n' +
-        '🔍 Puoi cercare offerte già salvate con `/search keyword`\n' +
+        '💡 Tocca un pulsante o scrivimi direttamente cosa cerchi — non serve digitare comandi.\n' +
         '📖 Tutti i comandi: /help';
       await this.safeSend(msg.chat.id, text, {
         parse_mode: 'Markdown',
@@ -132,7 +152,7 @@ class BotInterface {
           inline_keyboard: [
             [{ text: '➕ Aggiungi interesse', callback_data: 'add_interest' }, { text: '📋 I miei interessi', callback_data: 'my_interests' }],
             [{ text: '📡 Canali', callback_data: 'channels' }, { text: '📊 Statistiche', callback_data: 'stats' }],
-            [{ text: '🔍 Cerca', callback_data: 'search' }, { text: '❓ Aiuto', callback_data: 'help' }],
+            [{ text: '🔍 Cerca offerta', callback_data: 'search' }, { text: '❓ Aiuto', callback_data: 'help' }],
           ],
         },
       });
@@ -141,17 +161,17 @@ class BotInterface {
         '👋 Ciao! Sono *OfferRadar*.\n\n' +
         'Ti avviso ogni giorno quando escono offerte su ciò che ti interessa, dai canali Telegram monitorati.\n\n' +
         '📋 *Come funziona:*\n' +
-        '1️⃣ Aggiungi i tuoi interessi con `/add_interest`\n' +
-        '   _es. `/add_interest AirPods | elettronica | max €150`_\n' +
+        '1️⃣ Aggiungi i tuoi interessi — tocca il pulsante o scrivimi il nome del prodotto\n' +
         '2️⃣ Ogni mattina ricevi le offerte che fanno al caso tuo\n' +
-        '3️⃣ Cerca offerte passate con `/search keyword`\n\n' +
-        '💡 Vuoi aggiungere un canale? Inoltrami un messaggio da quel canale e lo proporrò all\'admin.';
+        '3️⃣ Cerca offerte passate con il pulsante 🔍 o scrivimi direttamente\n\n' +
+        '💡 Tocca un pulsante o scrivimi direttamente cosa cerchi — non serve digitare comandi.\n' +
+        '📡 Vuoi aggiungere un canale? Inoltrami un messaggio da quel canale.';
       await this.safeSend(msg.chat.id, text, {
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
             [{ text: '➕ Aggiungi interesse', callback_data: 'add_interest' }, { text: '📋 I miei interessi', callback_data: 'my_interests' }],
-            [{ text: '🔍 Cerca offerte', callback_data: 'search' }, { text: '❓ Aiuto', callback_data: 'help' }],
+            [{ text: '🔍 Cerca offerta', callback_data: 'search' }, { text: '❓ Aiuto', callback_data: 'help' }],
           ],
         },
       });
@@ -164,7 +184,7 @@ class BotInterface {
       return;
     }
     try {
-      const s = await this.db.getStats();
+      const s = this.db.getStats();
       const total = s.total_offers.count || 0;
       const pct = (n) => total > 0 ? ` (${Math.round(n / total * 100)}%)` : '';
 
@@ -177,8 +197,13 @@ class BotInterface {
       text += `📡 Canali monitorati: ${s.channels_count.count}\n`;
       text += `👥 Utenti attivi: ${s.users_count.count}\n`;
       text += `🎯 Interessi totali: ${s.interests_count.count}\n`;
-      if (s.categories.length > 0) {
-        text += '\n📂 *Categorie:*\n' + s.categories.map(c => `  • ${c.category}`).join('\n');
+      if (s.top_categories && s.top_categories.length > 0) {
+        text += '\n📂 *Categorie offerte:*\n' +
+          s.top_categories.map(c => `  • ${c.name}: ${c.offer_count}`).join('\n');
+      }
+      if (s.interest_categories && s.interest_categories.length > 0) {
+        text += '\n\n🎯 *Interessi per categoria:*\n' +
+          s.interest_categories.map(c => `  • ${this.db.categoryMapper.getName(c.category) || c.category}`).join('\n');
       }
       await this.safeSend(msg.chat.id, text, { parse_mode: 'Markdown', reply_to_message_id: msg.message_id });
     } catch (err) {
@@ -191,7 +216,10 @@ class BotInterface {
     const isAdmin = this.isFromMainAccount(msg);
 
     let text =
-      '📖 *Comandi OfferRadar*\n\n' +
+      '📖 *Aiuto OfferRadar*\n\n' +
+      '✨ *Modo facile*\n' +
+      'Usa /start e tocca i pulsanti — non servono comandi.\n' +
+      'Oppure scrivimi direttamente (es. _AirPods_) e ti chiedo cosa fare.\n\n' +
       '*Interessi*\n' +
       '`/add_interest keyword` — traccia una parola chiave\n' +
       '`/add_interest keyword | categoria | descrizione`\n' +
@@ -217,11 +245,87 @@ class BotInterface {
 
   async handleCallbackQuery(query) {
     const msg = query.message;
-    await this.bot.answerCallbackQuery(query.id);
     const isAdmin = query.from.id === this.mainAccountId;
     const tmpMsg = { chat: msg.chat, from: query.from, message_id: msg.message_id };
 
     try {
+      // ⭐ Salva favorite
+      if (query.data.startsWith('fav:')) {
+        const offerId = parseInt(query.data.slice(4), 10);
+        try {
+          this.db.addFavorite(query.from.id, offerId);
+          await this.bot.answerCallbackQuery(query.id, { text: 'Salvato ⭐', show_alert: false });
+        } catch (_) {
+          await this.bot.answerCallbackQuery(query.id, { text: 'Già nei preferiti.', show_alert: false });
+        }
+        return;
+      }
+
+      // 👎 Non mi interessa — decrement interest weight for matching brand/category
+      if (query.data.startsWith('dismiss:')) {
+        const offerId = parseInt(query.data.slice(8), 10);
+        try {
+          const offer = this.db.get('SELECT brand, category FROM offers WHERE id = ?', [offerId]);
+          if (offer) {
+            this.db.decrementInterestWeight(
+              query.from.id,
+              offer.brand,
+              offer.category,
+              config.DISMISS_WEIGHT_STEP
+            );
+          }
+          await this.bot.answerCallbackQuery(query.id, { text: 'Capito, meno offerte simili.', show_alert: false });
+        } catch (_) {
+          await this.bot.answerCallbackQuery(query.id, { text: 'Errore.', show_alert: false });
+        }
+        return;
+      }
+
+      // 🔥/🌀 offer feedback
+      if (query.data.startsWith('fb_spot:') || query.data.startsWith('fb_no:')) {
+        const [prefix, rawId] = query.data.split(':');
+        const offerId = parseInt(rawId, 10);
+        const rating = prefix === 'fb_spot' ? 'spot_on' : 'not_for_me';
+        try {
+          this.db.addUserFeedback(offerId, query.from.id, rating);
+          const text = rating === 'spot_on'
+            ? 'Registrato! Ti trovo offerte simili.'
+            : 'Capito, eviterò questo tipo.';
+          await this.bot.answerCallbackQuery(query.id, { text, show_alert: false });
+        } catch (_) {
+          await this.bot.answerCallbackQuery(query.id, { text: 'Già votato.', show_alert: false });
+        }
+        return;
+      }
+
+      await this.bot.answerCallbackQuery(query.id);
+
+      // flow:cancel — clear active state
+      if (query.data === 'flow:cancel') {
+        sessionState.clear(msg.chat.id);
+        await this.bot.editMessageText('Annullato.', { chat_id: msg.chat.id, message_id: msg.message_id })
+          .catch(() => this.safeSend(msg.chat.id, 'Annullato.'));
+        return;
+      }
+
+      // pick:s/i/x:<id> — disambiguation response
+      if (query.data.startsWith('pick:')) {
+        const parts = query.data.split(':');
+        const action = parts[1];
+        const id = parts[2];
+        const text = sessionState.takePendingText(id);
+        if (!text) {
+          await this.safeSend(msg.chat.id, '⏱ Scaduto. Scrivi di nuovo cosa cerchi.');
+          return;
+        }
+        if (action === 's') {
+          await this.handleSearch(tmpMsg, { 1: text });
+        } else if (action === 'i') {
+          await this.handleAddInterest(tmpMsg, { 1: text });
+        }
+        return;
+      }
+
       // Admin-only: channel approve/reject
       if (query.data.startsWith('cha:') || query.data.startsWith('chr:')) {
         if (!isAdmin) { await this.safeSend(msg.chat.id, '❌ Solo l\'admin può approvare canali.'); return; }
@@ -232,9 +336,12 @@ class BotInterface {
 
       switch (query.data) {
         case 'add_interest':
+          sessionState.set(msg.chat.id, 'add_interest');
           await this.safeSend(msg.chat.id,
-            '📝 Invia:\n`/add_interest keyword`\noppure con dettagli:\n`/add_interest keyword | categoria | descrizione`\n\n_es. /add_interest AirPods | elettronica | Cuffie wireless, max €150_',
-            { parse_mode: 'Markdown' });
+            '📝 Inviami la parola chiave da tracciare.\n\n' +
+            '_Esempio: AirPods Pro_\n\n' +
+            'Per dettagli avanzati scrivi `keyword | categoria | descrizione`.',
+            { parse_mode: 'Markdown', reply_markup: cancelKeyboard() });
           break;
         case 'my_interests':
           await this.handleMyInterests(tmpMsg);
@@ -248,7 +355,10 @@ class BotInterface {
           await this.handleStats(tmpMsg);
           break;
         case 'search':
-          await this.safeSend(msg.chat.id, '🔍 Invia: `/search keyword`\n\n_es. /search MacBook Pro M4_', { parse_mode: 'Markdown' });
+          sessionState.set(msg.chat.id, 'search');
+          await this.safeSend(msg.chat.id,
+            '🔍 Cosa vuoi cercare?\n\n_Esempio: MacBook Pro M4_',
+            { parse_mode: 'Markdown', reply_markup: cancelKeyboard() });
           break;
         case 'help':
           await this.handleHelp(tmpMsg);
@@ -315,9 +425,43 @@ class BotInterface {
     });
     b.on('message', (msg) => {
       if (msg.forward_from_chat && (msg.text || msg.caption)) {
-        this.handleForwardedMessage(msg).catch(err => logger.error('handleForwardedMessage failed:', err && err.message ? err.message : err));
+        return this.handleForwardedMessage(msg).catch(err => logger.error('handleForwardedMessage failed:', err && err.message ? err.message : err));
       }
+      const text = msg.text;
+      if (!text || text.startsWith('/')) return;
+
+      const intent = sessionState.get(msg.chat.id);
+      if (intent === 'search') {
+        sessionState.clear(msg.chat.id);
+        return this.handleSearch(msg, { 1: text }).catch(err => logger.error('handleSearch (flow) failed:', err && err.message ? err.message : err));
+      }
+      if (intent === 'add_interest') {
+        sessionState.clear(msg.chat.id);
+        return this.handleAddInterest(msg, { 1: text }).catch(err => logger.error('handleAddInterest (flow) failed:', err && err.message ? err.message : err));
+      }
+
+      this.handleAmbiguousText(msg, text).catch(err => logger.error('handleAmbiguousText failed:', err && err.message ? err.message : err));
     });
+  }
+
+  async handleAmbiguousText(msg, text) {
+    const id = sessionState.stashPendingText(text);
+    const safe = text.length > 50 ? text.slice(0, 50) + '…' : text;
+    await this.safeSend(msg.chat.id,
+      `Non ho capito 🤔\nVuoi *cercare* «${safe}» tra le offerte o *aggiungerlo* ai tuoi interessi?`,
+      {
+        parse_mode: 'Markdown',
+        reply_to_message_id: msg.message_id,
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '🔍 Cerca offerta', callback_data: `pick:s:${id}` },
+              { text: '📝 Aggiungi interesse', callback_data: `pick:i:${id}` },
+            ],
+            [{ text: '❌ Ignora', callback_data: `pick:x:${id}` }],
+          ],
+        },
+      });
   }
 
   async _registerCommands() {

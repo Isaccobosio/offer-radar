@@ -46,10 +46,40 @@ class Backfiller {
     }
   }
 
+  async disconnect() {
+    if (this.client && this.connected) {
+      try {
+        await this.client.disconnect();
+        logger.info('Backfiller disconnected');
+      } catch (_) {}
+    }
+    this.connected = false;
+    this.client = null;
+  }
+
+  /**
+   * Join a Telegram channel via MTProto so the burner account can read its messages.
+   * Accepts a username (@channel), a t.me link, or a channel name.
+   */
+  async joinChannel(usernameOrLink) {
+    if (!this.connected) throw new Error('MTProto client not connected');
+
+    let handle = (usernameOrLink || '').trim();
+    handle = handle.replace(/^https?:\/\/t\.me\//, '').replace(/^t\.me\//, '');
+    if (!handle.startsWith('@') && !handle.startsWith('+')) handle = '@' + handle;
+
+    const { Api } = require('telegram');
+    const entity = await this.client.getEntity(handle);
+    await this.client.invoke(new Api.channels.JoinChannel({ channel: entity }));
+    logger.info(`Joined channel ${handle} via MTProto`);
+    return entity;
+  }
+
   /**
    * Backfill multiple channels. `channels` is an array of { channel_id, channel_name }
+   * Pass `analysisQueue` to route backfilled offers through LLM extraction (low priority).
    */
-   async backfillChannels(channels = [], days = 14, db) {
+   async backfillChannels(channels = [], days = 14, db, analysisQueue = null) {
      if (!this.connected) {
        logger.warn('Backfiller not connected - skipping backfill');
        return;
@@ -57,7 +87,7 @@ class Backfiller {
 
      for (const ch of channels) {
        try {
-         await this.backfillChannel(ch, days, db);
+         await this.backfillChannel(ch, days, db, analysisQueue);
          // Add 3-second delay between channels to avoid rate limiting
          await new Promise(resolve => setTimeout(resolve, 3000));
        } catch (err) {
@@ -69,20 +99,24 @@ class Backfiller {
   /**
    * Backfill a single channel for the last `days` days.
    */
-  async backfillChannel(channel, days = 14, db) {
+  async backfillChannel(channel, days = 14, db, analysisQueue = null) {
     if (!this.connected) {
       throw new Error('MTProto client not connected');
     }
 
-    const dateLimit = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    // msg.date from GramJS is Unix seconds; compare as seconds throughout
+    const dateLimitSec = Math.floor((Date.now() - days * 24 * 60 * 60 * 1000) / 1000);
     let entity = null;
 
     try {
       // Prefer numeric channel_id if present
       if (channel.channel_id && Math.abs(channel.channel_id) > 1000) {
         try {
-          // Use absolute value to avoid -100... Bot API prefix issues
-          const idCandidate = Math.abs(channel.channel_id);
+          // Bot API channel IDs have a -100 prefix (e.g. -1001063843030).
+          // GramJS needs the bare channel ID (1063843030), so strip the leading "100".
+          let idStr = Math.abs(channel.channel_id).toString();
+          if (idStr.startsWith('100')) idStr = idStr.slice(3);
+          const idCandidate = parseInt(idStr, 10);
           entity = await this.client.getEntity(idCandidate);
         } catch (errId) {
           logger.warn(`Could not resolve channel by numeric id ${channel.channel_id}: ${errId.message || errId}`);
@@ -140,7 +174,7 @@ class Backfiller {
         if (testMsgs && testMsgs.length > 0) {
           methodUsed = 'getMessages';
           try {
-            const sample = testMsgs.slice(0,3).map(m => `${m.id || m.message?.id || 'id?'}@${m.date && (m.date.toISOString ? m.date.toISOString() : new Date(m.date).toISOString())}`);
+            const sample = testMsgs.slice(0,3).map(m => `${m.id || m.message?.id || 'id?'}@${m.date ? new Date(m.date * 1000).toISOString() : 'no-date'}`);
             logger.info(`🔍 getMessages sample: ${sample.join(', ')}`);
           } catch (e) {
             // ignore sample formatting errors
@@ -164,7 +198,7 @@ class Backfiller {
         if (testMsgs && testMsgs.length > 0) {
           methodUsed = 'iterMessages';
           try {
-            const sample2 = testMsgs.slice(0,3).map(m => `${m.id || m.message?.id || 'id?'}@${m.date && (m.date.toISOString ? m.date.toISOString() : new Date(m.date).toISOString())}`);
+            const sample2 = testMsgs.slice(0,3).map(m => `${m.id || m.message?.id || 'id?'}@${m.date ? new Date(m.date * 1000).toISOString() : 'no-date'}`);
             logger.info(`🔍 iterMessages sample: ${sample2.join(', ')}`);
           } catch (e) {
             // ignore
@@ -196,8 +230,8 @@ class Backfiller {
         logger.debug(`Using iterMessages for real fetch (${channel.channel_name})`);
         for await (const msg of this.client.iterMessages(entity, { limit: 100 })) {
           if (!msg) continue;
-          // msg.date is a Date object
-          if (msg.date < dateLimit) break;
+          // msg.date is Unix seconds from GramJS
+          if (msg.date < dateLimitSec) break;
 
           scanned++;
           if (!latestDate || msg.date > latestDate) latestDate = msg.date;
@@ -211,7 +245,7 @@ class Backfiller {
           }
 
           const messageId = msg.id;
-          const isProcessed = await db.isProcessed(messageId);
+          const isProcessed = db.isProcessed(messageId);
           if (isProcessed) {
             skippedProcessed++;
             continue;
@@ -222,12 +256,14 @@ class Backfiller {
             channel_id: channel.channel_id || (entity && entity.id) || 0,
             channel_name: channel.channel_name || (entity && (entity.title || entity.username)) || 'Unknown',
             raw_text: rawText,
-            created_at: new Date(msg.date),
+            created_at: new Date(msg.date * 1000),
           };
 
-          await db.insertOffer(offer);
-          await db.markProcessed(messageId, offer.channel_id);
-          // Log concise info for the new offer: channel and short title
+          const insertResult = db.insertOffer(offer);
+          db.markProcessed(messageId, offer.channel_id);
+          if (insertResult && insertResult.id && analysisQueue) {
+            analysisQueue.enqueue(insertResult.id, 'low');
+          }
           try {
             const raw = offer.raw_text || '';
             let shortTitle = raw.split('\n')[0].trim();
@@ -243,15 +279,16 @@ class Backfiller {
         logger.debug(`Using getMessages for real fetch (${channel.channel_name})`);
         let offsetId = 0;
         const limit = 100;
+        let reachedOldMessages = false;
         while (true) {
-          // getMessages may accept offsetId
           const messages = await this.client.getMessages(entity, { limit, offsetId });
           if (!messages || messages.length === 0) break;
 
           for (const msg of messages) {
             if (!msg) continue;
-            if (msg.date < dateLimit) {
-              // we've reached older messages
+            // msg.date is Unix seconds; dateLimitSec is also in seconds
+            if (msg.date < dateLimitSec) {
+              reachedOldMessages = true;
               break;
             }
 
@@ -266,7 +303,7 @@ class Backfiller {
             }
 
             const messageId = msg.id;
-            const isProcessed = await db.isProcessed(messageId);
+            const isProcessed = db.isProcessed(messageId);
             if (isProcessed) {
               skippedProcessed++;
               continue;
@@ -277,12 +314,14 @@ class Backfiller {
               channel_id: channel.channel_id || (entity && entity.id) || 0,
               channel_name: channel.channel_name || (entity && (entity.title || entity.username)) || 'Unknown',
               raw_text: rawText,
-              created_at: new Date(msg.date),
+              created_at: new Date(msg.date * 1000),
             };
 
-            await db.insertOffer(offer);
-            await db.markProcessed(messageId, offer.channel_id);
-            // Log concise info for the new offer: channel and short title
+            const insertResult = db.insertOffer(offer);
+            db.markProcessed(messageId, offer.channel_id);
+            if (insertResult && insertResult.id && analysisQueue) {
+              analysisQueue.enqueue(insertResult.id, 'low');
+            }
             try {
               const raw = offer.raw_text || '';
               let shortTitle = raw.split('\n')[0].trim();
@@ -294,15 +333,17 @@ class Backfiller {
             added++;
           }
 
-          if (messages.length < limit) break;
+          if (reachedOldMessages || messages.length < limit) break;
           offsetId = messages[messages.length - 1].id - 1;
+          // Pause between pages to avoid flood waits
+          await new Promise(resolve => setTimeout(resolve, 3000));
         }
       }
 
       // Summary diagnostics for this backfill run
       try {
-        const latestStr = latestDate ? latestDate.toISOString() : 'N/A';
-        const earliestStr = earliestDate ? earliestDate.toISOString() : 'N/A';
+        const latestStr = latestDate ? new Date(latestDate * 1000).toISOString() : 'N/A';
+        const earliestStr = earliestDate ? new Date(earliestDate * 1000).toISOString() : 'N/A';
         logger.info(`🔎 Backfill summary for ${channel.channel_name || channel.channel_id}: scanned=${scanned}, added=${added}, skippedProcessed=${skippedProcessed}, skippedEmpty=${skippedEmpty}, latest=${latestStr}, earliest=${earliestStr}`);
       } catch (e) {
         // ignore

@@ -4,12 +4,7 @@ const logger = require('./utils/logger');
 const config = require('../config/constants');
 
 const Database = require('./db');
-let AnalyzerClass;
-if (process.env.OPEN_ROUTER_API_KEY) {
-  AnalyzerClass = require('./llm/openrouter');
-} else {
-  AnalyzerClass = require('./llm');
-}
+const AnalyzerClass = require('./llm');
 const BatchProcessor = require('./scheduler');
 
 async function main() {
@@ -23,8 +18,8 @@ async function main() {
     process.exit(1);
   }
 
-  if (!process.env.OPEN_ROUTER_API_KEY && !process.env.GROQ_API_KEY) {
-    logger.error('No LLM API key set (OPEN_ROUTER_API_KEY or GROQ_API_KEY). Aborting analyze.');
+  if (!process.env.OPEN_ROUTER_API_KEY) {
+    logger.error('OPEN_ROUTER_API_KEY not set. Aborting analyze.');
     await db.close();
     process.exit(1);
   }

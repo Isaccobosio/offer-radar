@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sqlite3 *)",
+      "Bash(node --check src/bot/index.js)",
+      "Bash(node --check src/bot/commands/interests.js)",
+      "Bash(node --check src/bot/commands/channels.js)",
+      "Bash(node --check src/bot/commands/search.js)",
+      "Bash(node --check src/db/index.js)",
+      "Bash(node --check src/scheduler/index.js)",
+      "Bash(node --check src/index.js)",
+      "Bash(node *)",
+      "Bash(npx ctx7@latest library openai \"OpenRouter SDK Node.js client chat completions\")",
+      "Bash(npx ctx7@latest docs /openai/openai-node \"custom base URL OpenRouter third party provider chat completions\")",
+      "Bash(yarn add *)",
+      "Bash(yarn node *)",
+      "Bash(npm install *)",
+      "mcp__plugin_context7_context7__resolve-library-id",
+      "mcp__plugin_context7_context7__query-docs",
+      "Bash(OPEN_ROUTER_MODEL=deepseek/deepseek-chat-v3.1:free node scripts/test-analyze.js 1)",
+      "Bash(OPEN_ROUTER_MODEL=google/gemma-3-27b-it:free node scripts/test-analyze.js 1)",
+      "Bash(curl -s -H \"Authorization: Bearer $\\(grep OPEN_ROUTER_API_KEY .env)",
+      "Bash(OPEN_ROUTER_MODEL=\"qwen/qwen3-next-80b-a3b-instruct:free\" timeout 30 node scripts/test-analyze.js 1)",
+      "Bash(OPEN_ROUTER_MODEL=\"qwen/qwen3-next-80b-a3b-instruct:free\" node scripts/test-analyze.js 1)",
+      "Bash(OPEN_ROUTER_MODEL=\"openai/gpt-oss-120b:free\" node scripts/test-analyze.js 1)",
+      "Bash(OPEN_ROUTER_MODEL=\"openai/gpt-oss-120b:free\" node scripts/test-analyze.js 5)",
+      "Bash(grep -vE \"^2026|^$\")",
+      "Bash(yarn remove *)",
+      "Bash(npm uninstall *)"
+    ]
+  }
+}

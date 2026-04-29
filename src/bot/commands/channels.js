@@ -10,14 +10,13 @@ async function handleForwardedMessage(bot, msg) {
   const text = msg.text || msg.caption || '';
 
   if (!isAdmin) {
-    // Non-admin: create a channel suggestion for admin to approve/reject
     if (channelId === 0) {
       await bot.reply(msg, '❌ Could not identify the source channel. Forward a message directly from a public channel.');
       return;
     }
     const senderName = msg.from?.username ? `@${msg.from.username}` : (msg.from?.first_name || `User ${senderId}`);
     try {
-      const existing = await bot.db.get(
+      const existing = bot.db.get(
         'SELECT id FROM channel_requests WHERE channel_id = ? AND status = "pending"',
         [channelId]
       );
@@ -25,11 +24,11 @@ async function handleForwardedMessage(bot, msg) {
         await bot.reply(msg, `⏳ Channel *${channelName}* is already pending admin review.`);
         return;
       }
-      await bot.db.run(
+      bot.db.run(
         'INSERT INTO channel_requests (channel_id, channel_name, channel_username, requested_by_id, requested_by_name) VALUES (?, ?, ?, ?, ?)',
         [channelId, channelName, channelUsername, senderId, senderName]
       );
-      const req = await bot.db.get(
+      const req = bot.db.get(
         'SELECT id FROM channel_requests WHERE channel_id = ? AND status = "pending" ORDER BY id DESC LIMIT 1',
         [channelId]
       );
@@ -56,7 +55,7 @@ async function handleForwardedMessage(bot, msg) {
   // Admin flow: register channel + store offer
   try {
     if (channelId !== 0) {
-      await bot.db.run(
+      bot.db.run(
         'INSERT OR IGNORE INTO channels (channel_id, channel_name, channel_username) VALUES (?, ?, ?)',
         [channelId, channelName, channelUsername]
       );
@@ -68,7 +67,6 @@ async function handleForwardedMessage(bot, msg) {
       return;
     }
 
-    // Prefer forward_from_message_id (real channel message ID) for correct source links
     const messageId = msg.forward_from_message_id || msg.message_id;
     const offer = {
       message_id: messageId,
@@ -78,20 +76,24 @@ async function handleForwardedMessage(bot, msg) {
       created_at: new Date(),
     };
 
-    const isProcessed = await bot.db.isProcessed(messageId);
+    const isProcessed = bot.db.isProcessed(messageId);
     if (isProcessed) {
       logger.debug(`Message ${messageId} already processed`);
       return;
     }
 
-    await bot.db.insertOffer(offer);
-    await bot.db.markProcessed(messageId, offer.channel_id);
+    bot.db.insertOffer(offer);
+    bot.db.markProcessed(messageId, offer.channel_id);
 
     await bot.safeSend(
       bot.mainAccountId,
-      `✅ Offerta ricevuta da *${channelName}*\n\nVerrà analizzata nel prossimo ciclo 📊`,
+      `✅ Offerta ricevuta da *${channelName}*\n\nAvvio analisi… 📊`,
       { parse_mode: 'Markdown' }
     );
+
+    if (bot.processor && !bot.processor.isProcessing) {
+      bot.processor.processBatch().catch(err => logger.warn('Batch after forwarded offer failed:', err.message));
+    }
   } catch (err) {
     logger.error('Error handling forwarded message:', err.message);
   }
@@ -117,7 +119,7 @@ async function handleAddChannel(bot, msg, match) {
     const crypto = require('crypto');
     const channelId = parseInt(crypto.createHash('md5').update(channelName).digest('hex').substring(0, 8), 16);
 
-    await bot.db.run(
+    bot.db.run(
       'INSERT OR IGNORE INTO channels (channel_id, channel_name, channel_username) VALUES (?, ?, ?)',
       [channelId, channelName, null]
     );
@@ -129,7 +131,10 @@ async function handleAddChannel(bot, msg, match) {
       try {
         await bot.safeSend(msg.chat.id, '🔁 Recupero offerte recenti...', { reply_to_message_id: msg.message_id });
         await bot.backfiller.backfillChannel({ channel_id: channelId, channel_name: channelName }, config.OFFER_RETENTION_DAYS, bot.db);
-        await bot.safeSend(msg.chat.id, '✅ Recupero completato', { reply_to_message_id: msg.message_id });
+        await bot.safeSend(msg.chat.id, '✅ Recupero completato — avvio analisi…', { reply_to_message_id: msg.message_id });
+        if (bot.processor && !bot.processor.isProcessing) {
+          bot.processor.processBatch().catch(err => logger.warn('Batch after add_channel backfill failed:', err.message));
+        }
       } catch (err) {
         logger.warn('Backfill for new channel failed:', err.message || err);
       }
@@ -150,7 +155,7 @@ async function handleChannels(bot, msg) {
   }
 
   try {
-    const channels = await bot.db.all('SELECT channel_name, channel_username FROM channels ORDER BY channel_name');
+    const channels = bot.db.all('SELECT channel_name, channel_username FROM channels ORDER BY channel_name');
 
     if (channels.length === 0) {
       await bot.safeSend(
@@ -175,29 +180,32 @@ async function handleChannels(bot, msg) {
 }
 
 async function handleChannelRequestCallback(bot, msg, reqId, approve) {
-  const req = await bot.db.get('SELECT * FROM channel_requests WHERE id = ?', [reqId]);
+  const req = bot.db.get('SELECT * FROM channel_requests WHERE id = ?', [reqId]);
   if (!req || req.status !== 'pending') {
     await bot.safeSend(msg.chat.id, '⚠️ Request already handled or not found.');
     return;
   }
 
   if (approve) {
-    await bot.db.run(
+    bot.db.run(
       'INSERT OR IGNORE INTO channels (channel_id, channel_name, channel_username) VALUES (?, ?, ?)',
       [req.channel_id, req.channel_name, req.channel_username]
     );
-    await bot.db.run('UPDATE channel_requests SET status = "approved" WHERE id = ?', [reqId]);
+    bot.db.run('UPDATE channel_requests SET status = "approved" WHERE id = ?', [reqId]);
 
-    // Fire-and-forget: join channel + backfill
     if (bot.backfiller) {
       const handle = req.channel_username || req.channel_name;
       bot.backfiller.joinChannel(handle).catch(err =>
         logger.warn(`MTProto join failed for ${handle}: ${err.message}`)
       );
       const ch = { channel_id: req.channel_id, channel_name: req.channel_name, channel_username: req.channel_username };
-      bot.backfiller.backfillChannel(ch, config.OFFER_RETENTION_DAYS, bot.db).catch(err =>
-        logger.warn('Post-approval backfill failed:', err.message)
-      );
+      bot.backfiller.backfillChannel(ch, config.OFFER_RETENTION_DAYS, bot.db)
+        .then(() => {
+          if (bot.processor && !bot.processor.isProcessing) {
+            return bot.processor.processBatch();
+          }
+        })
+        .catch(err => logger.warn('Post-approval backfill/batch failed:', err.message));
     }
 
     await bot.safeSend(
@@ -211,12 +219,8 @@ async function handleChannelRequestCallback(bot, msg, reqId, approve) {
       { parse_mode: 'Markdown' }
     ).catch(() => {});
   } else {
-    await bot.db.run('UPDATE channel_requests SET status = "rejected" WHERE id = ?', [reqId]);
-    await bot.safeSend(
-      msg.chat.id,
-      `❌ Channel *${req.channel_name}* rejected.`,
-      { parse_mode: 'Markdown' }
-    );
+    bot.db.run('UPDATE channel_requests SET status = "rejected" WHERE id = ?', [reqId]);
+    await bot.safeSend(msg.chat.id, `❌ Channel *${req.channel_name}* rejected.`, { parse_mode: 'Markdown' });
     bot.safeSend(
       req.requested_by_id,
       `❌ Your channel suggestion *${req.channel_name}* was not approved by the admin.`,

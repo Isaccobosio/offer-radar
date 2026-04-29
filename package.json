@@ -21,12 +21,14 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@openrouter/sdk": "^0.12.21",
     "axios": "^1.6.0",
+    "better-sqlite3": "^12.9.0",
     "dotenv": "^16.0.0",
     "groq-sdk": "^1.1.2",
     "node-cron": "^3.0.2",
     "node-telegram-bot-api": "^0.63.0",
-    "sqlite3": "^5.1.6",
+    "openai": "^6.34.0",
     "telegram": "^2.26.22",
     "winston": "^3.8.2"
   },
