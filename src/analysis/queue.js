@@ -11,10 +11,30 @@ class AnalysisQueue {
     this.timestamps = [];
     this.requestsToday = 0;
     this.lastResetDate = new Date().toDateString();
+    this.quotaExhausted = false;
+    this.rpdLimit = config.OPENROUTER_RPD_LIMIT;
+    this.remainingToday = null; // populated from API response headers
+  }
+
+  async init() {
+    if (!this.llm) return;
+    try {
+      const limits = await this.llm.fetchKeyLimits();
+      if (limits.rpdLimit !== null) {
+        this.rpdLimit = limits.rpdLimit;
+        logger.info(`OpenRouter RPD limit auto-detected: ${this.rpdLimit}${limits.isFreeTier ? ' (free tier)' : ''}`);
+      } else {
+        logger.info(`OpenRouter: no daily limit detected (credit-based plan), using config default ${this.rpdLimit}`);
+      }
+    } catch (err) {
+      logger.warn(`Could not fetch OpenRouter key limits — using config default ${this.rpdLimit}:`, err.message);
+    }
   }
 
   enqueue(offerId, priority = 'high') {
     if (!this.llm) return;
+    this._checkDailyReset();
+    if (this.quotaExhausted) return;
     if (priority === 'high') {
       this.queue.unshift(offerId);
     } else {
@@ -31,10 +51,15 @@ class AnalysisQueue {
       while (this.queue.length > 0) {
         this._checkDailyReset();
 
-        if (config.OPENROUTER_RPD_LIMIT > 0 && this.requestsToday >= config.OPENROUTER_RPD_LIMIT) {
+        const quotaHit =
+          (this.remainingToday !== null && this.remainingToday <= 0) ||
+          (this.rpdLimit > 0 && this.requestsToday >= this.rpdLimit);
+
+        if (quotaHit) {
           logger.warn(
-            `⚠️  Daily LLM quota exhausted (${this.requestsToday}/${config.OPENROUTER_RPD_LIMIT}) — ${this.queue.length} offers deferred to batch`
+            `⚠️  Daily LLM quota exhausted (${this.requestsToday}/${this.rpdLimit}) — ${this.queue.length} offers deferred to batch`
           );
+          this.quotaExhausted = true;
           this.queue = [];
           break;
         }
@@ -43,11 +68,20 @@ class AnalysisQueue {
 
         const offerId = this.queue.shift();
         try {
-          await this._analyzeOffer(offerId);
+          const remaining = await this._analyzeOffer(offerId);
           this.requestsToday++;
           this.timestamps.push(Date.now());
+          if (remaining !== null && remaining !== undefined) {
+            this.remainingToday = remaining;
+          }
         } catch (err) {
           if (err.status === 429) {
+            if (err.allExhausted) {
+              logger.warn(`⚠️  All LLM providers exhausted — ${this.queue.length + 1} offers deferred to batch`);
+              this.quotaExhausted = true;
+              this.queue = [];
+              break;
+            }
             logger.warn(`Rate limited on offer ${offerId} — leaving as pending for batch`);
           } else {
             logger.error(`Analysis failed for offer ${offerId}:`, err.message);
@@ -59,12 +93,13 @@ class AnalysisQueue {
     }
   }
 
+  // Returns remaining daily quota from API headers, or null if unknown
   async _analyzeOffer(offerId) {
     const offer = this.db.get('SELECT * FROM offers WHERE id = ?', [offerId]);
-    if (!offer || offer.status !== 'pending') return;
+    if (!offer || offer.status !== 'pending') return null;
 
     const allInterests = this.db.getAllInterests();
-    if (allInterests.length === 0) return;
+    if (allInterests.length === 0) return null;
 
     const recentFeedback = this.db.all(
       `SELECT COALESCE(o.clean_title, o.product_name) AS product_name, f.rating
@@ -74,6 +109,7 @@ class AnalysisQueue {
     );
 
     const analysis = await this.llm.extractOffer(offer.raw_text, allInterests, recentFeedback);
+    const remaining = analysis._rateLimit?.remaining ?? null;
 
     const score = analysis.confidence_score || analysis.score || 0;
     let status;
@@ -113,12 +149,15 @@ class AnalysisQueue {
 
     const result = this.db.upsertOfferBySlug(offerId, updateFields);
 
-    logger.info(`🧠 Analyzed offer ${offerId}: ${analysis.clean_title || analysis.product_name || '?'} (${score}%) → ${status} [${result.action}]`);
+    const remainingStr = remaining !== null ? ` [${remaining} req remaining today]` : '';
+    logger.info(`🧠 Analyzed offer ${offerId}: ${analysis.clean_title || analysis.product_name || '?'} (${score}%) → ${status} [${result.action}]${remainingStr}`);
 
     if (result.action === 'inserted' && status === 'processed' && score >= config.SCORE_INSTANT) {
       const canonicalOffer = this.db.get('SELECT * FROM offers WHERE id = ?', [result.id]);
       await this._sendRichCard(canonicalOffer || offer, analysis);
     }
+
+    return remaining;
   }
 
   async _sendRichCard(offer, analysis) {
@@ -163,6 +202,8 @@ class AnalysisQueue {
     if (this.lastResetDate !== today) {
       logger.info(`Daily LLM quota reset (was ${this.requestsToday})`);
       this.requestsToday = 0;
+      this.remainingToday = null;
+      this.quotaExhausted = false;
       this.lastResetDate = today;
     }
   }

@@ -7,7 +7,22 @@ module.exports = {
   API_HASH: process.env.API_HASH,
   TELEGRAM_SESSION: process.env.TELEGRAM_SESSION || '',
 
-  // LLM (OpenRouter)
+  // LLM provider chain (comma-separated, order = fallback priority)
+  LLM_PROVIDERS: (process.env.LLM_PROVIDERS || 'groq,gemini,openrouter').split(',').map(s => s.trim()),
+
+  // Groq (primary — ~14k RPD free, llama-3.3-70b)
+  GROQ_API_KEY: process.env.GROQ_API_KEY,
+  GROQ_MODEL: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+  GROQ_SEARCH_MODEL: process.env.GROQ_SEARCH_MODEL || 'llama-3.1-8b-instant',
+  GROQ_RPD_LIMIT: parseInt(process.env.GROQ_RPD_LIMIT || '14400', 10),
+
+  // Gemini via Google AI Studio (secondary — 1500 RPD free)
+  GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+  GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
+  GEMINI_SEARCH_MODEL: process.env.GEMINI_SEARCH_MODEL || 'gemini-2.0-flash',
+  GEMINI_RPD_LIMIT: parseInt(process.env.GEMINI_RPD_LIMIT || '1500', 10),
+
+  // OpenRouter (fallback — 50 RPD free)
   OPEN_ROUTER_API_KEY: process.env.OPEN_ROUTER_API_KEY,
   OPEN_ROUTER_MODEL: process.env.OPEN_ROUTER_MODEL || 'openai/gpt-oss-120b:free',
   OPEN_ROUTER_SEARCH_MODEL: process.env.OPEN_ROUTER_SEARCH_MODEL || 'openai/gpt-4o-mini',

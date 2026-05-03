@@ -47,13 +47,10 @@ class OfferRadar {
         if (this.analysisQueue) this.analysisQueue.enqueue(offerId);
       });
 
-      // Initialize LLM
-      if (process.env.OPEN_ROUTER_API_KEY) {
-        logger.info('🧠 OpenRouter analyzer ready (skipping startup test to preserve quota)');
-        this.llm = new AnalyzerClass();
-      } else {
-        logger.warn('OPEN_ROUTER_API_KEY not set — LLM features disabled');
-        this.llm = null;
+      // Initialize LLM router (active if any provider key is set)
+      this.llm = AnalyzerClass();
+      if (!this.llm) {
+        logger.warn('No LLM provider keys set (GROQ_API_KEY, GEMINI_API_KEY, OPEN_ROUTER_API_KEY) — LLM features disabled');
       }
 
       // Initialize Bot Interface
@@ -68,6 +65,7 @@ class OfferRadar {
         sendInstantAlert: (id, offer, analysis) => this.bot.sendRichCard(id, offer, analysis),
       });
       if (this.llm) {
+        await this.analysisQueue.init();
         logger.info('⚡ Real-time analysis queue ready');
       }
 
@@ -218,8 +216,8 @@ class OfferRadar {
       }
     }
 
-    if (!process.env.OPEN_ROUTER_API_KEY) {
-      warnings.push('OPEN_ROUTER_API_KEY not found — LLM features disabled');
+    if (!process.env.GROQ_API_KEY && !process.env.GEMINI_API_KEY && !process.env.OPEN_ROUTER_API_KEY) {
+      warnings.push('No LLM provider keys found (GROQ_API_KEY, GEMINI_API_KEY, OPEN_ROUTER_API_KEY) — LLM features disabled');
     }
 
     if (!process.env.BOT_TOKEN) {

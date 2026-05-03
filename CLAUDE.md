@@ -58,3 +58,64 @@ npm start               # Production
 npm run dev             # Dev with nodemon
 npm run setup:session   # Authenticate burner account (one-time)
 ```
+
+## Production Server (Proxmox)
+
+Runs in a **privileged** LXC container on a home Proxmox server.
+
+| Detail | Value |
+|--------|-------|
+| Server IP | 192.168.8.100 |
+| App path | `/opt/offer-radar/` |
+| DB path | `/opt/offer-radar/data/offers.db` |
+| Logs | `docker logs offer-radar -f` or `/opt/offer-radar/logs/` |
+
+### LXC requirements
+Container **must be privileged** — unprivileged LXC blocks Docker BuildKit via AppArmor.
+Also add to the CT config (`/etc/pve/lxc/<CTID>.conf` on Proxmox host):
+```
+lxc.apparmor.profile: unconfined
+lxc.cap.drop:
+```
+`docker-compose.yml` also sets `security_opt: apparmor=unconfined` for the container runtime.
+
+### Auto-update
+`scripts/update.sh` polls `origin/main` every 5 min via crontab:
+```bash
+*/5 * * * * /opt/offer-radar/scripts/update.sh >> /var/log/offer-radar-update.log 2>&1
+```
+On new commits: `git pull origin main` → `docker compose up -d --build`.
+Check update log: `tail -f /var/log/offer-radar-update.log`
+
+### Deploy a code change
+1. Commit + push to `main` on Mac
+2. Within 5 min, server auto-pulls and rebuilds
+3. Watch with: `ssh root@192.168.8.100 "tail -f /var/log/offer-radar-update.log"`
+
+### Manual rebuild (skip waiting)
+```bash
+ssh root@192.168.8.100
+cd /opt/offer-radar
+git pull origin main
+docker compose up -d --build
+```
+
+### Recover / transfer the SQLite DB
+If DB is lost, copy from Mac:
+```bash
+# Option A — direct SCP (requires root SSH password auth enabled on server)
+scp data/offers.db root@192.168.8.100:/opt/offer-radar/data/offers.db
+
+# Option B — via Proxmox host (pct push, no SSH needed)
+scp data/offers.db proxmox-host:/tmp/offers.db
+# then on Proxmox host:
+pct push <CTID> /tmp/offers.db /opt/offer-radar/data/offers.db
+```
+After transfer: `docker compose restart` (or `stop` + `up -d`).
+
+Enable root SSH on the container if needed:
+```bash
+echo "PermitRootLogin yes" >> /etc/ssh/sshd_config.d/00-root.conf
+systemctl restart ssh
+passwd root
+```
