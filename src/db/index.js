@@ -578,6 +578,11 @@ class Database {
   // ── Interests ───────────────────────────────────────────────────────────────
 
   insertInterest(userId, keyword, category, description = null, confidence_threshold = 50) {
+    const existing = this.get(
+      'SELECT 1 FROM interests WHERE user_id = ? AND LOWER(keyword) = LOWER(?)',
+      [userId, keyword]
+    );
+    if (existing) throw new Error('UNIQUE constraint failed: interests.keyword');
     return this.run(
       `INSERT INTO interests (user_id, keyword, category, description, confidence_threshold) VALUES (?, ?, ?, ?, ?)`,
       [userId, keyword, category, description, confidence_threshold]
@@ -599,7 +604,7 @@ class Database {
   }
 
   removeInterest(userId, keyword) {
-    return this.run('DELETE FROM interests WHERE user_id = ? AND keyword = ?', [userId, keyword]);
+    return this.run('DELETE FROM interests WHERE user_id = ? AND LOWER(keyword) = LOWER(?)', [userId, keyword]);
   }
 
   requeueRejectedByKeyword(keyword, days = 7) {
@@ -615,7 +620,7 @@ class Database {
 
   updateInterestDescription(userId, keyword, description) {
     return this.run(
-      'UPDATE interests SET description = ? WHERE user_id = ? AND keyword = ?',
+      'UPDATE interests SET description = ? WHERE user_id = ? AND LOWER(keyword) = LOWER(?)',
       [description, userId, keyword]
     );
   }
