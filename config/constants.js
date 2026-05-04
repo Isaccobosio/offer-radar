@@ -73,6 +73,9 @@ module.exports = {
   TELEGRAM_ACTION_DELAY_MIN_MS: 500,
   TELEGRAM_ACTION_DELAY_MAX_MS: 3000,
 
+  // Analysis queue
+  ANALYSIS_QUEUE_MAX: parseInt(process.env.ANALYSIS_QUEUE_MAX || '2000', 10),
+
   // Connection Settings
   CONNECTION_RETRIES: 5,
   REQUEST_RETRIES: 3,

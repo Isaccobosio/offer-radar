@@ -148,8 +148,14 @@ class OfferRadar {
 
       // Schedule periodic backfill (if MTProto backfiller available)
       if (this.backfiller) {
+        let backfillRunning = false;
         try {
           cron.schedule(config.BACKFILL_SCHEDULE, async () => {
+            if (backfillRunning) {
+              logger.warn('Periodic backfill skipped — previous run still in progress');
+              return;
+            }
+            backfillRunning = true;
             try {
               let channels = this.db.all('SELECT channel_id, channel_name, channel_username FROM channels');
               if (!channels || channels.length === 0) {
@@ -189,6 +195,8 @@ class OfferRadar {
               }
             } catch (err) {
               logger.error('Periodic backfill failed:', err.message || err);
+            } finally {
+              backfillRunning = false;
             }
           });
           logger.info(`🔁 Periodic backfill scheduled: ${config.BACKFILL_SCHEDULE}`);

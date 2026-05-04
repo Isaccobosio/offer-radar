@@ -33,7 +33,11 @@ class Backfiller {
 
     try {
       const session = new StringSession(this.sessionString);
-      this.client = new TelegramClient(session, this.apiId, this.apiHash, { connectionRetries: 5 });
+      this.client = new TelegramClient(session, this.apiId, this.apiHash, {
+        connectionRetries: 5,
+        receiveUpdates: false,
+      });
+      this.client.setLogLevel('error');
       // If session string is valid, connect silently
       await this.client.connect();
       this.connected = true;

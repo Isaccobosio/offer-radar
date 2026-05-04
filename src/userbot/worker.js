@@ -55,6 +55,19 @@ async function main() {
 
   const session = new StringSession(sessionString);
   const client = new TelegramClient(session, apiId, apiHash, { connectionRetries: 5 });
+  client.setLogLevel('error');
+
+  // Suppress benign TIMEOUT noise from GramJS _updateLoop (connection recovers automatically)
+  process.on('uncaughtException', (err) => {
+    if (err.message === 'TIMEOUT') return;
+    parentPort.postMessage({ type: 'error', message: `Uncaught: ${err.message}` });
+    process.exit(1);
+  });
+  process.on('unhandledRejection', (reason) => {
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    if (msg === 'TIMEOUT') return;
+    parentPort.postMessage({ type: 'error', message: `Unhandled rejection: ${msg}` });
+  });
 
   try {
     await client.connect();
@@ -62,6 +75,20 @@ async function main() {
   } catch (err) {
     parentPort.postMessage({ type: 'error', message: `GramJS connect failed: ${err.message}` });
     process.exit(1);
+  }
+
+  // Cache channel names so we don't issue an MTProto round-trip per message
+  const entityNameCache = new Map();
+  async function resolveChannelName(channelId) {
+    if (entityNameCache.has(channelId)) return entityNameCache.get(channelId);
+    try {
+      const entity = await client.getEntity(channelId);
+      const name = entity.title || entity.username || String(channelId);
+      entityNameCache.set(channelId, name);
+      return name;
+    } catch (_) {
+      return 'Unknown';
+    }
   }
 
   client.addEventHandler(async (event) => {
@@ -85,11 +112,7 @@ async function main() {
       if (!channelId) return;
       if (allowedBareIds.size > 0 && !allowedBareIds.has(channelId)) return;
 
-      let channelName = 'Unknown';
-      try {
-        const entity = await client.getEntity(channelId);
-        channelName = entity.title || entity.username || String(channelId);
-      } catch (_) {}
+      const channelName = await resolveChannelName(channelId);
 
       insertStmt.run(msg.id, channelId, channelName, rawText);
       parentPort.postMessage({ type: 'inserted', messageId: msg.id, channelId });

@@ -21,11 +21,11 @@ async function handleAddInterest(bot, msg, match) {
   let keyword, category, description;
   if (raw.includes('|')) {
     const parts = raw.split('|').map(p => p.trim());
-    keyword = parts[0].replace(/^["'"'"]+|["'"'"]+$/g, '').trim();
+    keyword = parts[0].replace(/^["'"'"]+|["'"'"]+$/g, '').trim().toLowerCase();
     category = parts[1] || 'Generale';
     description = parts[2] || null;
   } else {
-    keyword = raw.replace(/^["'"'"]+|["'"'"]+$/g, '').trim();
+    keyword = raw.replace(/^["'"'"]+|["'"'"]+$/g, '').trim().toLowerCase();
     category = 'Generale';
     description = null;
   }
@@ -111,7 +111,7 @@ async function handleRemoveInterest(bot, msg, match) {
   const userId = await bot.getOrCreateUser(msg);
   if (!userId) { await bot.reply(msg, '❌ Impossibile identificare l\'utente.'); return; }
 
-  const keyword = (match[1] || '').trim();
+  const keyword = (match[1] || '').trim().toLowerCase();
   if (!keyword) { await bot.reply(msg, '❌ Formato: `/remove_interest keyword`'); return; }
 
   try {

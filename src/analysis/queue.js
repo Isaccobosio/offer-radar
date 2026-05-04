@@ -35,6 +35,11 @@ class AnalysisQueue {
     if (!this.llm) return;
     this._checkDailyReset();
     if (this.quotaExhausted) return;
+    const max = config.ANALYSIS_QUEUE_MAX;
+    if (priority !== 'high' && this.queue.length >= max) {
+      logger.warn(`AnalysisQueue full (${max}) — dropping low-priority offer ${offerId}`);
+      return;
+    }
     if (priority === 'high') {
       this.queue.unshift(offerId);
     } else {

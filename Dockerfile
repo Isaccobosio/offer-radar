@@ -19,4 +19,4 @@ ENV NODE_ENV=production
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
   CMD node -e "process.exit(0)"
 
-CMD ["node", "src/index.js"]
+CMD ["node", "--max-old-space-size=384", "src/index.js"]
