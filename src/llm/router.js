@@ -104,19 +104,52 @@ class LLMRouter {
     return { brand: null, model: null };
   }
 
-  async analyzeOffersBatch(offers, interests) {
-    const results = [];
-    for (const offer of offers) {
-      try {
-        const analysis = await this.extractOffer(offer.raw_text, interests);
-        results.push({ offer_id: offer.id, analysis });
-      } catch (err) {
-        logger.error(`[router] batch failed for offer ${offer.id}:`, err.message);
-        results.push({ offer_id: offer.id, error: err.message });
+  // True batch: N offers → 1 LLM request. On malformed, throws (caller marks all rejected).
+  async extractOffersBatch(offers, interests, feedbackContext = []) {
+    let lastErr;
+    for (const provider of this.providers) {
+      if (!provider.isAvailable()) {
+        logger.debug(`[router] skipping ${provider.name} (unavailable)`);
+        continue;
       }
-      await sleep(200);
+      try {
+        const provMessages = provider.buildOfferBatchMessages(offers, interests, feedbackContext);
+        const { content, remaining } = await provider.callWithRetry(provMessages, {
+          max_tokens: Math.min(700 * offers.length, 8000),
+        });
+
+        const cleaned = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+        const arr = JSON.parse(cleaned);
+        if (!Array.isArray(arr) || arr.length !== offers.length) {
+          throw new Error(`Batch length mismatch: got ${arr?.length}, expected ${offers.length}`);
+        }
+
+        const results = arr.map((r, i) => {
+          const idx = typeof r.offer_index === 'number' ? r.offer_index : i;
+          if (r.score !== undefined && r.confidence_score === undefined) r.confidence_score = r.score;
+          if (typeof r.price === 'number') { r._price_number = r.price; r.price = String(r.price); }
+          r.product_name = r.clean_title || r.product_name || null;
+          if (typeof r.confidence_score !== 'number' || !r.summary) {
+            throw new Error(`Invalid item at index ${idx}: missing required fields`);
+          }
+          return { offer_id: offers[idx]?.id ?? offers[i].id, analysis: r };
+        });
+
+        const agg = this._aggregateRemaining(provider, remaining);
+        logger.debug(`[router] ${provider.name} batch-extracted ${offers.length} offers`);
+        return { results, remaining: agg, provider: provider.name };
+      } catch (err) {
+        if (err.status === 429) {
+          provider.markRateLimited(err);
+          logger.warn(`[router] ${provider.name} 429 (batch) — trying next provider`);
+          lastErr = err;
+          continue;
+        }
+        // Malformed JSON or length mismatch — don't try other providers, let caller reject batch
+        throw err;
+      }
     }
-    return results;
+    throw lastErr?.status === 429 ? new AllProvidersExhaustedError() : (lastErr || new AllProvidersExhaustedError());
   }
 
   // Aggregated fetchKeyLimits: tries OpenRouter for real limits, sums RPD across providers

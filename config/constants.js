@@ -75,6 +75,7 @@ module.exports = {
 
   // Analysis queue
   ANALYSIS_QUEUE_MAX: parseInt(process.env.ANALYSIS_QUEUE_MAX || '2000', 10),
+  ANALYSIS_BATCH_SIZE: parseInt(process.env.ANALYSIS_BATCH_SIZE || '10', 10),
 
   // Connection Settings
   CONNECTION_RETRIES: 5,

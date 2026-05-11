@@ -100,6 +100,24 @@ git pull origin main
 docker compose up -d --build
 ```
 
+### Auto-start after host reboot
+
+Full recovery chain: **Proxmox host boots → LXC autostarts → `docker.service` autostarts → container restart policy `unless-stopped` brings the bot up.**
+
+**Step 1 — Proxmox host (one-time):**
+```bash
+pct set <CTID> --onboot 1   # find CTID with: pct list
+```
+
+**Step 2 — inside the LXC (idempotent, run after any deploy):**
+```bash
+bash /opt/offer-radar/scripts/ensure-autostart.sh
+```
+
+**Verify:** `grep onboot /etc/pve/lxc/<CTID>.conf` on Proxmox host should show `onboot: 1`.
+
+---
+
 ### Recover / transfer the SQLite DB
 If DB is lost, copy from Mac:
 ```bash

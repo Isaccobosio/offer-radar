@@ -1,5 +1,5 @@
 const { sleep, exponentialBackoff } = require('../../utils/delays');
-const { SYSTEM_PROMPT, SEARCH_PARSE_PROMPT } = require('../prompts');
+const { SYSTEM_PROMPT, SYSTEM_PROMPT_BATCH, SEARCH_PARSE_PROMPT } = require('../prompts');
 const logger = require('../../utils/logger');
 
 class BaseProvider {
@@ -77,9 +77,10 @@ class BaseProvider {
     return { content: raw, remaining: null };
   }
 
-  async callWithRetry(messages, attempt = 1, maxAttempts = 3) {
+  async callWithRetry(messages, opts = {}, attempt = 1) {
+    const { max_tokens = 700, maxAttempts = 3 } = opts;
     try {
-      const result = await this.chat({ messages });
+      const result = await this.chat({ messages, max_tokens });
       this.requestsToday++;
 
       const rpdHit = this.rpdLimit > 0 && this.requestsToday >= this.rpdLimit;
@@ -95,13 +96,13 @@ class BaseProvider {
         logger.warn(`[${this.name}] 429 (attempt ${attempt}/${maxAttempts})`);
         if (attempt < maxAttempts) {
           await exponentialBackoff(attempt, 2000);
-          return this.callWithRetry(messages, attempt + 1, maxAttempts);
+          return this.callWithRetry(messages, opts, attempt + 1);
         }
         throw err;
       }
       if (err instanceof SyntaxError && attempt < maxAttempts) {
         await sleep(1000);
-        return this.callWithRetry(messages, attempt + 1, maxAttempts);
+        return this.callWithRetry(messages, opts, attempt + 1);
       }
       throw err;
     }
@@ -123,6 +124,29 @@ class BaseProvider {
     return [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: `User interests:\n${interestsList}${feedbackSection}\n\nOffer text:\n${offerText}\n\nReturn ONLY valid JSON.` },
+    ];
+  }
+
+  buildOfferBatchMessages(offers, interests, feedbackContext = []) {
+    const interestsList = interests
+      .map(i => {
+        let line = `- ${i.keyword} [${i.category}]`;
+        if (i.description) line += `: ${i.description}`;
+        return line;
+      })
+      .join('\n');
+
+    const feedbackSection = feedbackContext.length > 0
+      ? `\nRecent user feedback:\n${feedbackContext.map(f => `- ${f.product_name || f.clean_title}: ${f.rating}`).join('\n')}`
+      : '';
+
+    const offersSection = offers
+      .map((o, idx) => `### Offer ${idx}\n${o.raw_text}`)
+      .join('\n\n');
+
+    return [
+      { role: 'system', content: SYSTEM_PROMPT_BATCH },
+      { role: 'user', content: `User interests:\n${interestsList}${feedbackSection}\n\n${offersSection}\n\nReturn ONLY a valid JSON array with ${offers.length} objects.` },
     ];
   }
 

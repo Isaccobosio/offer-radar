@@ -77,58 +77,59 @@ class BatchProcessor {
       let successCount = 0;
       let errorCount = 0;
 
-      for (const offer of pendingOffers) {
+      for (let i = 0; i < pendingOffers.length; i += config.ANALYSIS_BATCH_SIZE) {
+        const chunk = pendingOffers.slice(i, i + config.ANALYSIS_BATCH_SIZE);
         try {
-          const analysis = await this.llm.analyzeOffer(offer.raw_text, allInterests, recentFeedback);
+          const { results } = await this.llm.extractOffersBatch(
+            chunk.map(o => ({ id: o.id, raw_text: o.raw_text })),
+            allInterests,
+            recentFeedback,
+          );
 
-          // Map score field
-          if (analysis.score !== undefined && analysis.confidence_score === undefined) {
-            analysis.confidence_score = analysis.score;
+          for (const { offer_id, analysis } of results) {
+            const score = analysis.confidence_score || analysis.score || 0;
+            const mergedInterests = [
+              ...new Set([...(analysis.matched_interests || []), ...(analysis.tags || [])]),
+            ];
+            const status = score >= config.SCORE_DIGEST_MIN ? 'processed' : 'rejected';
+
+            this.db.upsertOfferBySlug(offer_id, {
+              summary: analysis.summary,
+              confidence_score: score,
+              category: analysis.category,
+              product_name: analysis.product_name || null,
+              brand: analysis.brand || null,
+              price: analysis.price || null,
+              original_price: analysis.original_price != null ? String(analysis.original_price) : null,
+              price_drop_percentage: analysis.price_drop_percentage ?? null,
+              is_accessory: analysis.is_accessory ? 1 : 0,
+              clean_title: analysis.clean_title || null,
+              model: analysis.model || null,
+              slug: analysis.slug || null,
+              keywords: Array.isArray(analysis.keywords) ? JSON.stringify(analysis.keywords) : (analysis.keywords || null),
+              image_url: analysis.image_url || null,
+              tags: JSON.stringify(analysis.tags || []),
+              matched_interests: JSON.stringify(mergedInterests),
+              status,
+            });
           }
 
-          const score = analysis.confidence_score || 0;
-          const mergedInterests = [
-            ...new Set([...(analysis.matched_interests || []), ...(analysis.tags || [])]),
-          ];
-
-          let status;
-          if (score >= config.SCORE_INSTANT) {
-            status = 'processed'; // already sent as instant rich card by queue
-          } else if (score >= config.SCORE_DIGEST_MIN) {
-            status = 'processed';
-          } else {
-            status = 'rejected';
-          }
-
-          this.db.upsertOfferBySlug(offer.id, {
-            summary: analysis.summary,
-            confidence_score: score,
-            category: analysis.category,
-            product_name: analysis.product_name || null,
-            brand: analysis.brand || null,
-            price: analysis.price || null,
-            original_price: analysis.original_price || null,
-            price_drop_percentage: analysis.price_drop_percentage ?? null,
-            is_accessory: analysis.is_accessory ? 1 : 0,
-            clean_title: analysis.clean_title || null,
-            model: analysis.model || null,
-            slug: analysis.slug || null,
-            keywords: Array.isArray(analysis.keywords) ? JSON.stringify(analysis.keywords) : (analysis.keywords || null),
-            image_url: analysis.image_url || null,
-            tags: JSON.stringify(analysis.tags || []),
-            matched_interests: JSON.stringify(mergedInterests),
-            status,
-          });
-
-          successCount++;
+          successCount += results.length;
+          logger.info(`🧠 Scheduler batch ${Math.floor(i / config.ANALYSIS_BATCH_SIZE) + 1}: ${results.length} offers processed`);
         } catch (err) {
-          errorCount++;
-          if (err.status === 429 || /rate.?limit|quota.?exceed/i.test(err.message)) {
-            const remaining = pendingOffers.length - successCount - errorCount;
-            logger.warn(`Rate limited at offer ${offer.id} — leaving ${remaining} offers pending for next batch`);
+          if (err.status === 429 || err.allExhausted || /rate.?limit|quota.?exceed/i.test(err.message)) {
+            const remaining = pendingOffers.length - i;
+            logger.warn(`Rate limited at chunk ${i} — leaving ${remaining} offers pending for next batch`);
             break;
           }
-          logger.error(`Failed to analyze offer ${offer.id}:`, err.message);
+          // Malformed batch response — reject the chunk and continue
+          const placeholders = chunk.map(() => '?').join(',');
+          this.db.run(
+            `UPDATE offers SET status='rejected', processed_at=CURRENT_TIMESTAMP WHERE id IN (${placeholders})`,
+            chunk.map(o => o.id),
+          );
+          errorCount += chunk.length;
+          logger.error(`Scheduler batch failed (${chunk.length} offers rejected):`, err.message);
         }
       }
 

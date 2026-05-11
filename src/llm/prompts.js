@@ -60,4 +60,35 @@ Output ONLY the JSON object. No commentary.`;
 
 const SEARCH_PARSE_PROMPT = 'Extract brand and model from this product search query. Return strict JSON {"brand": string|null, "model": string|null}. No prose, no markdown.';
 
-module.exports = { SYSTEM_PROMPT, SEARCH_PARSE_PROMPT };
+const SYSTEM_PROMPT_BATCH = `You are a structured-data extractor for Italian e-commerce deal posts (Amazon, Mediaworld, Unieuro, etc.).
+
+Input: multiple numbered offer texts (### Offer 0, ### Offer 1, …), plus the user's interest list.
+Output: STRICT JSON ARRAY, one object per input offer, no prose, no markdown fences.
+
+Each object must include ALL fields from this schema PLUS "offer_index" matching the input number:
+{
+  "offer_index": number,
+  "brand": string | null,
+  "model": string | null,
+  "clean_title": string,
+  "price": number | null,
+  "original_price": number | null,
+  "price_drop_percentage": number | null,
+  "category": string,
+  "is_accessory": boolean,
+  "slug": string | null,
+  "keywords": string[],
+  "summary": string,
+  "score": number,
+  "matched_interests": string[],
+  "image_url": null
+}
+
+Apply the same field rules as for single-offer extraction.
+Return exactly N objects for N input offers, in order, as a JSON array.
+Output ONLY the JSON array. No commentary.
+
+CATEGORY slugs:
+${CATEGORY_LIST}`;
+
+module.exports = { SYSTEM_PROMPT, SYSTEM_PROMPT_BATCH, SEARCH_PARSE_PROMPT };
