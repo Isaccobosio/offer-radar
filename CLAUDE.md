@@ -137,3 +137,57 @@ echo "PermitRootLogin yes" >> /etc/ssh/sshd_config.d/00-root.conf
 systemctl restart ssh
 passwd root
 ```
+
+---
+
+## Bot silent — troubleshooting runbook
+
+### Step 1 — Is the process alive?
+```bash
+ssh root@192.168.8.100
+pct list                    # find CTID
+pct enter <CTID>
+docker ps                   # offer-radar container up?
+docker logs offer-radar --tail 50
+docker compose -f /opt/offer-radar/docker-compose.yml up -d
+```
+Look for `LLM router: groq, gemini, openrouter active` startup banner in logs.
+If `AUTH_KEY_DUPLICATED` appears: stop container, delete the session file, restart, re-auth with `npm run setup:session`.
+
+### Step 2 — DB triage
+```bash
+sqlite3 /opt/offer-radar/data/offers.db \
+  "SELECT status, COUNT(*) FROM offers WHERE created_at > datetime('now','-3 day') GROUP BY status;"
+```
+- Heavy `pending` → LLM dead or all providers rate-limited
+- Heavy `filtered` → healthy (pre-filter working)
+- Heavy `rejected` → malformed LLM response (check `analysis_attempts` counts)
+- Zero `processed` → nothing reaches the digest
+
+### Step 3 — Are interests healthy?
+```bash
+sqlite3 /opt/offer-radar/data/offers.db \
+  "SELECT keyword, weight FROM interests WHERE user_id=<MAIN_ACCOUNT_ID>;"
+```
+All weights 0 → dismiss-button wiped a category. Reset: `UPDATE interests SET weight=100 WHERE user_id=<id>;`
+
+### Step 4 — Any deliveries today?
+```bash
+sqlite3 /opt/offer-radar/data/offers.db \
+  "SELECT COUNT(*) FROM sent_to_user WHERE sent_at > datetime('now','-1 day');"
+```
+
+### Step 5 — Check LLM quota
+```bash
+# OpenRouter key usage
+curl -s -H "Authorization: Bearer $OPEN_ROUTER_API_KEY" \
+  https://openrouter.ai/api/v1/auth/key | python3 -m json.tool
+```
+
+### Status interpretation
+| offers status | meaning |
+|---|---|
+| `pending` | not yet analyzed (LLM may be down) |
+| `filtered` | no keyword match — skipped cheaply |
+| `processed` | scored ≥50, eligible for digest |
+| `rejected` | scored <50 or 3 failed parse attempts |

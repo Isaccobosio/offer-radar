@@ -38,7 +38,7 @@ module.exports = {
 
   // Database
   DATABASE_PATH: process.env.DATABASE_PATH || './data/offers.db',
-  OFFER_RETENTION_DAYS: 14,
+  OFFER_RETENTION_DAYS: parseInt(process.env.OFFER_RETENTION_DAYS || '7', 10),
   CONFIDENCE_THRESHOLD: 50,
 
   // Scoring tiers
@@ -76,6 +76,7 @@ module.exports = {
   // Analysis queue
   ANALYSIS_QUEUE_MAX: parseInt(process.env.ANALYSIS_QUEUE_MAX || '2000', 10),
   ANALYSIS_BATCH_SIZE: parseInt(process.env.ANALYSIS_BATCH_SIZE || '10', 10),
+  ANALYSIS_BATCH_RUN_MAX: parseInt(process.env.ANALYSIS_BATCH_RUN_MAX || '200', 10),
 
   // Connection Settings
   CONNECTION_RETRIES: 5,

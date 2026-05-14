@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const logger = require('../utils/logger');
 const config = require('../../config/constants');
 const { sendDigestCard, sendDigestTrailer } = require('../bot/richCard');
+const { alertOwner } = require('../utils/ownerAlert');
 
 class BatchProcessor {
   constructor(llmAnalyzer, database, botSender) {
@@ -42,8 +43,14 @@ class BatchProcessor {
     try {
       logger.info('🚀 Starting batch processing...');
 
-      const pendingOffers = this.db.getPendingOffers();
-      logger.info(`📦 Found ${pendingOffers.length} pending offers`);
+      // Pre-filter: mark offers with no keyword match as 'filtered' (no LLM cost)
+      const filterResult = this.db.markUnmatchedPendingAsFiltered();
+      if (filterResult.changes > 0) {
+        logger.info(`🔍 Pre-filter: ${filterResult.changes} offers dropped (no keyword match)`);
+      }
+
+      const pendingOffers = this.db.getPendingOffersMatchingAnyInterest(config.ANALYSIS_BATCH_RUN_MAX);
+      logger.info(`📦 Found ${pendingOffers.length} pending offers (matching interests, cap ${config.ANALYSIS_BATCH_RUN_MAX})`);
 
       if (pendingOffers.length === 0) {
         logger.info('✨ No offers to process');
@@ -122,14 +129,20 @@ class BatchProcessor {
             logger.warn(`Rate limited at chunk ${i} — leaving ${remaining} offers pending for next batch`);
             break;
           }
-          // Malformed batch response — reject the chunk and continue
-          const placeholders = chunk.map(() => '?').join(',');
+          // Malformed batch response — increment retry counter; reject only after 3 failures
+          const ids = chunk.map(o => o.id);
+          const placeholders = ids.map(() => '?').join(',');
           this.db.run(
-            `UPDATE offers SET status='rejected', processed_at=CURRENT_TIMESTAMP WHERE id IN (${placeholders})`,
-            chunk.map(o => o.id),
+            `UPDATE offers SET analysis_attempts = analysis_attempts + 1 WHERE id IN (${placeholders})`,
+            ids,
+          );
+          this.db.run(
+            `UPDATE offers SET status='rejected', processed_at=CURRENT_TIMESTAMP
+             WHERE id IN (${placeholders}) AND analysis_attempts >= 3`,
+            ids,
           );
           errorCount += chunk.length;
-          logger.error(`Scheduler batch failed (${chunk.length} offers rejected):`, err.message);
+          logger.error(`Scheduler batch parse failed (${chunk.length} offers, attempt incremented):`, err.message);
         }
       }
 
@@ -137,6 +150,7 @@ class BatchProcessor {
 
       // Send individual digest rich cards per user
       const users = this.db.getAllActiveUsers();
+      let totalSent = 0;
       for (const user of users) {
         try {
           const userInterests = this.db.getAllInterests(user.telegram_id);
@@ -158,6 +172,8 @@ class BatchProcessor {
 
           for (const offer of top) {
             await sendDigestCard(this.botSender.bot, user.telegram_id, offer, offer.matched_keyword);
+            this.db.recordSent(user.telegram_id, offer.id, 'digest');
+            totalSent++;
           }
 
           await sendDigestTrailer(this.botSender.bot, user.telegram_id, top.length, remaining);
@@ -166,6 +182,12 @@ class BatchProcessor {
         } catch (err) {
           logger.error(`Failed to send digest to user ${user.telegram_id}:`, err.message);
         }
+      }
+
+      if (totalSent === 0 && pendingOffers.length > 0) {
+        alertOwner(this.botSender, 'digest-empty-with-pending',
+          `Digest sent 0 cards but ${pendingOffers.length} offers were pending — LLM likely down or pre-filter too strict`
+        ).catch(() => {});
       }
 
       const stats = this.db.getStats();

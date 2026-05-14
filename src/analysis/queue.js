@@ -1,5 +1,6 @@
 const logger = require('../utils/logger');
 const config = require('../../config/constants');
+const { alertOwner } = require('../utils/ownerAlert');
 
 class AnalysisQueue {
   constructor(llm, db, botSender) {
@@ -35,6 +36,11 @@ class AnalysisQueue {
     if (!this.llm) return;
     this._checkDailyReset();
     if (this.quotaExhausted) return;
+    // Cheap keyword pre-filter: skip offers with no matching user interest
+    if (!this._quickMatch(offerId)) {
+      logger.debug(`Offer ${offerId} skipped (no keyword match)`);
+      return;
+    }
     const max = config.ANALYSIS_QUEUE_MAX;
     if (priority !== 'high' && this.queue.length >= max) {
       logger.warn(`AnalysisQueue full (${max}) — dropping low-priority offer ${offerId}`);
@@ -65,7 +71,7 @@ class AnalysisQueue {
             `⚠️  Daily LLM quota exhausted (${this.requestsToday}/${this.rpdLimit}) — ${this.queue.length} offers deferred to batch`
           );
           this.quotaExhausted = true;
-          this.queue = [];
+          alertOwner(this.botSender, 'llm-quota-exhausted', `LLM daily quota hit (${this.requestsToday}/${this.rpdLimit} requests) — analysis paused until reset`).catch(() => {});
           break;
         }
 
@@ -84,7 +90,7 @@ class AnalysisQueue {
             if (err.allExhausted) {
               logger.warn(`⚠️  All LLM providers exhausted — ${this.queue.length + offerIds.length} offers deferred to batch`);
               this.quotaExhausted = true;
-              this.queue = [];
+              alertOwner(this.botSender, 'llm-quota-exhausted', 'All LLM providers exhausted — analysis paused until reset').catch(() => {});
               break;
             }
             logger.warn(`Rate limited on batch [${offerIds.join(',')}] — leaving as pending for next batch`);
@@ -125,13 +131,19 @@ class AnalysisQueue {
       );
     } catch (err) {
       if (err.status === 429 || err.allExhausted) throw err;
-      // Malformed response — reject the whole batch
-      const placeholders = offers.map(() => '?').join(',');
+      // Malformed response — increment retry counter; reject permanently only after 3 failures
+      const ids = offers.map(o => o.id);
+      const placeholders = ids.map(() => '?').join(',');
       this.db.run(
-        `UPDATE offers SET status='rejected', processed_at=CURRENT_TIMESTAMP WHERE id IN (${placeholders})`,
-        offers.map(o => o.id),
+        `UPDATE offers SET analysis_attempts = analysis_attempts + 1 WHERE id IN (${placeholders})`,
+        ids,
       );
-      logger.error(`🧠 Batch rejected (${offers.length} offers) — malformed LLM response: ${err.message}`);
+      this.db.run(
+        `UPDATE offers SET status='rejected', processed_at=CURRENT_TIMESTAMP
+         WHERE id IN (${placeholders}) AND analysis_attempts >= 3`,
+        ids,
+      );
+      logger.error(`🧠 Batch parse failed (${offers.length} offers, attempt incremented) — malformed LLM response: ${err.message}`);
       return null;
     }
 
@@ -192,6 +204,7 @@ class AnalysisQueue {
         const hasMatch = [...matchedKws].some(kw => userKws.has(kw));
         if (hasMatch) {
           await this.botSender.sendRichCard(user.telegram_id, offer, analysis);
+          this.db.recordSent(user.telegram_id, offer.id, 'instant');
         }
       }
     } catch (err) {
@@ -220,12 +233,29 @@ class AnalysisQueue {
 
   _checkDailyReset() {
     const today = new Date().toDateString();
-    if (this.lastResetDate !== today) {
+    const hoursSinceReset = this._lastResetMs ? (Date.now() - this._lastResetMs) / 3600000 : Infinity;
+    if (this.lastResetDate !== today || (this.quotaExhausted && hoursSinceReset >= 20)) {
       logger.info(`Daily LLM quota reset (was ${this.requestsToday})`);
       this.requestsToday = 0;
       this.remainingToday = null;
       this.quotaExhausted = false;
       this.lastResetDate = today;
+      this._lastResetMs = Date.now();
+    }
+  }
+
+  _quickMatch(offerId) {
+    try {
+      const row = this.db.get(
+        `SELECT 1 FROM offers o WHERE o.id = ? AND EXISTS (
+           SELECT 1 FROM interests i
+           WHERE i.weight > 0 AND INSTR(LOWER(o.raw_text), LOWER(i.keyword)) > 0
+         ) LIMIT 1`,
+        [offerId]
+      );
+      return !!row;
+    } catch (_) {
+      return true; // fail open: if DB error, let it through
     }
   }
 }

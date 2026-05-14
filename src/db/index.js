@@ -480,6 +480,27 @@ class Database {
       }
     } catch (err) { logger.warn('interests weight migration failed:', err.message); }
 
+    // 17. Add analysis_attempts column to offers (retry counter for malformed LLM responses)
+    try {
+      const cols = this.all('PRAGMA table_info(offers)');
+      if (!cols.some(c => c.name === 'analysis_attempts')) {
+        this.run('ALTER TABLE offers ADD COLUMN analysis_attempts INTEGER NOT NULL DEFAULT 0');
+        logger.info('Migration: added analysis_attempts to offers');
+      }
+    } catch (err) { logger.warn('analysis_attempts migration failed:', err.message); }
+
+    // 18. Create sent_to_user table to prevent re-sending the same offer
+    try {
+      this.run(`CREATE TABLE IF NOT EXISTS sent_to_user (
+        user_id  INTEGER NOT NULL,
+        offer_id INTEGER NOT NULL,
+        channel  TEXT NOT NULL CHECK(channel IN ('instant','digest')),
+        sent_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, offer_id)
+      )`);
+      this.run('CREATE INDEX IF NOT EXISTS idx_sent_user_date ON sent_to_user(user_id, sent_at)');
+    } catch (err) { logger.warn('sent_to_user migration failed:', err.message); }
+
     // 16. Reset processed offers missing structured metadata back to pending for re-analysis
     // Old offers were analyzed with a schema that didn't return brand/clean_title/keywords,
     // so digest keyword/brand joins fail for them. Re-pending lets the current LLM fill them in.
@@ -854,8 +875,12 @@ class Database {
       `DELETE FROM processed_messages WHERE processed_at < datetime('now', '-' || ? || ' days')`,
       [days]
     );
-    logger.info(`🧹 Cleaned up ${offers.changes} old offers and ${msgs.changes} dedup records`);
-    return { offers: offers.changes, messages: msgs.changes };
+    const sent = this.run(
+      `DELETE FROM sent_to_user WHERE sent_at < datetime('now', '-' || ? || ' days')`,
+      [days]
+    );
+    logger.info(`🧹 Cleaned up ${offers.changes} old offers, ${msgs.changes} dedup records, ${sent.changes} sent records`);
+    return { offers: offers.changes, messages: msgs.changes, sent: sent.changes };
   }
 
   // ── Feedback ────────────────────────────────────────────────────────────────
@@ -914,10 +939,13 @@ class Database {
         JOIN interests i ON i.user_id = ?
         WHERE o.status = 'processed'
           AND o.confidence_score >= ?
-          AND o.confidence_score <  ?
           AND (? OR COALESCE(o.is_accessory, 0) = 0)
           AND i.weight > 0
           AND o.created_at > datetime('now', '-1 day')
+          AND NOT EXISTS (
+                SELECT 1 FROM sent_to_user s
+                WHERE s.user_id = i.user_id AND s.offer_id = o.id
+              )
           AND (
                 LOWER(i.keyword) = LOWER(COALESCE(o.brand, ''))
              OR i.category = o.category
@@ -934,7 +962,38 @@ class Database {
                COALESCE(o.price_drop_percentage, 0) DESC,
                o.created_at DESC
       LIMIT ?`,
-      [userId, config.SCORE_DIGEST_MIN, config.SCORE_INSTANT, accessFlag, limit]
+      [userId, config.SCORE_DIGEST_MIN, accessFlag, limit]
+    );
+  }
+
+  recordSent(userId, offerId, channel) {
+    try {
+      this.run(
+        `INSERT OR IGNORE INTO sent_to_user (user_id, offer_id, channel) VALUES (?, ?, ?)`,
+        [userId, offerId, channel]
+      );
+    } catch (err) { logger.warn('recordSent failed:', err.message); }
+  }
+
+  markUnmatchedPendingAsFiltered() {
+    return this.run(
+      `UPDATE offers SET status='filtered', processed_at=CURRENT_TIMESTAMP
+       WHERE status='pending' AND NOT EXISTS (
+         SELECT 1 FROM interests i
+         WHERE i.weight > 0 AND INSTR(LOWER(offers.raw_text), LOWER(i.keyword)) > 0
+       )`
+    );
+  }
+
+  getPendingOffersMatchingAnyInterest(limit) {
+    return this.all(
+      `SELECT o.* FROM offers o WHERE o.status='pending'
+       AND EXISTS (
+         SELECT 1 FROM interests i
+         WHERE i.weight > 0 AND INSTR(LOWER(o.raw_text), LOWER(i.keyword)) > 0
+       )
+       ORDER BY o.created_at ASC LIMIT ?`,
+      [limit]
     );
   }
 
